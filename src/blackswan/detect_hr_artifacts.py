@@ -195,11 +195,11 @@ def detect_artifacts(records, mad_multiplier=2.0, min_bpm_deviation=15,
                     for k in range(i, j): flags[k] = False
                     i = j; continue
 
+        ts_start = fit_to_local(tss[i])
+        ts_end = fit_to_local(tss[j-1])
         segs.append({
             'start_idx': i, 'end_idx': j-1,
-            'start_ts': tss[i], 'end_ts': tss[j-1],
-            'start_local': fit_to_local(tss[i]),
-            'end_local': fit_to_local(tss[j-1]),
+            'start_ts': ts_start, 'end_ts': ts_end,
             'duration_s': dur,
             'mean_hr': sum(seg_hrs)/len(seg_hrs),
             'min_hr': min(seg_hrs),
@@ -223,22 +223,26 @@ def trial_flagged_fraction(segs, trial_start, trial_end) -> float:
 
     Args:
         segs: artifact segments from ``detect_artifacts()`` — each dict has
-            ``start_ts`` and ``end_ts`` keys.
+            ``start_ts`` and ``end_ts`` keys (timezone-aware datetimes).
         trial_start, trial_end: trial bounds. Must be the same type as
-            ``segs[i]["start_ts"]`` (datetime objects or numeric epoch seconds);
-            mixing types raises TypeError.
+            ``segs[i]["start_ts"]`` — typically datetime objects matching
+            ``stats_for_window()`` output. Mixing datetimes with numeric
+            epochs raises TypeError on subtraction.
 
     Returns:
-        Overlap fraction in [0, 1]. Returns 0.0 when ``trial_end <= trial_start``
-        (empty or inverted window) — caller's responsibility to filter those
-        before deciding to exclude.
+        Overlap fraction in [0, 1].
+
+    Raises:
+        ValueError: when ``trial_end <= trial_start`` (zero or inverted
+            window) — silent zero-fraction would mask a caller bug as
+            "trial has no artifacts, keep it".
     """
     def _sec(delta):
         return delta.total_seconds() if hasattr(delta, "total_seconds") else float(delta)
 
     trial_dur = _sec(trial_end - trial_start)
     if trial_dur <= 0:
-        return 0.0
+        raise ValueError(f"trial_end must be > trial_start (got dur={trial_dur})")
     overlap = 0.0
     for s in segs:
         if s["start_ts"] >= trial_end or s["end_ts"] <= trial_start:
@@ -288,7 +292,7 @@ def main():
     top = args.top if not args.verbose else len(segs_sorted)
     for s in segs_sorted[:top]:
         types_tag = f"[{s.get('types','').strip()}]" if s.get('types','').strip() else ""
-        print(f"  {s['start_local'].strftime('%H:%M:%S')} - {s['end_local'].strftime('%H:%M:%S')}  "
+        print(f"  {s['start_ts'].strftime('%H:%M:%S')} - {s['end_ts'].strftime('%H:%M:%S')}  "
               f"dur {s['duration_s']:4d}s  mean HR {s['mean_hr']:5.1f}  range {s['min_hr']}-{s['max_hr']}  {types_tag}")
         print(f"    {s['reason_first']}")
     if len(segs_sorted) > top:

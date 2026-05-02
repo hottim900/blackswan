@@ -1,9 +1,11 @@
 """Tests for the trial-level escalation helper from detect_hr_artifacts.
 
-Numeric epoch seconds are used as timestamps to keep the tests free of
-datetime fixtures — the helper accepts any subtractable type.
+Most tests use numeric epoch seconds for brevity; one explicitly verifies
+the timedelta path by using timezone-aware datetimes.
 """
 from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -43,11 +45,29 @@ def test_multiple_segments_sum():
     assert trial_flagged_fraction(segs, 100, 200) == pytest.approx(0.3)
 
 
-def test_empty_trial_window_returns_zero():
-    """Inverted or zero-width trial window -> 0.0 (caller's job to filter
-    those before deciding to exclude)."""
-    assert trial_flagged_fraction([seg(100, 150)], 100, 100) == 0.0
-    assert trial_flagged_fraction([seg(100, 150)], 200, 100) == 0.0
+def test_zero_or_inverted_window_raises():
+    """Silent 0.0 would mask a caller bug as "trial has no artifacts —
+    keep it", which is exactly the wrong direction for the escalation
+    rule. Raise instead so the bug surfaces."""
+    with pytest.raises(ValueError, match="trial_end must be"):
+        trial_flagged_fraction([seg(100, 150)], 100, 100)
+    with pytest.raises(ValueError, match="trial_end must be"):
+        trial_flagged_fraction([seg(100, 150)], 200, 100)
+
+
+def test_datetime_timestamps_work():
+    """Real callers pass tz-aware datetimes (from segment_uphill /
+    detect_artifacts since the start_ts unification). Verify the
+    timedelta arithmetic path is wired up."""
+    base = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    segs_dt = [
+        {"start_ts": base + timedelta(seconds=20),
+         "end_ts": base + timedelta(seconds=60)},
+    ]
+    t_start = base
+    t_end = base + timedelta(seconds=100)
+    # 40s flagged within a 100s window -> 0.4
+    assert trial_flagged_fraction(segs_dt, t_start, t_end) == pytest.approx(0.4)
 
 
 def test_no_segments_returns_zero():
