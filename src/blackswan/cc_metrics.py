@@ -49,13 +49,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from statistics import mean
 
-__all__ = ["TrialStats", "ComparisonReport", "compare_sessions", "cc_trial_2_3_mean",
-           "cc_back_half_mean", "compute_confounders"]
+__all__ = ["TrialStats", "Confounders", "ComparisonReport", "compare_sessions",
+           "cc_trial_2_3_mean", "cc_back_half_mean", "compute_confounders"]
 
 
 @dataclass
 class TrialStats:
-    """Per-trial summary as returned by `segment_uphill.stats_for_window`."""
+    """Per-trial summary as returned by ``segment_uphill.stats_for_window``.
+
+    ``kmh`` must be > 0 — CC is undefined at zero speed and downstream metrics
+    divide by ``mean(kmh)``. Constructing with ``kmh <= 0`` raises ValueError
+    so the bad input is caught at the dataclass boundary, not deep inside
+    ``compare_sessions``.
+    """
     dur: float
     dist: float
     kmh: float
@@ -64,6 +70,12 @@ class TrialStats:
     avg_hr: float
     max_hr: float
     cc: float
+
+    def __post_init__(self):
+        if self.kmh <= 0:
+            raise ValueError(
+                f"TrialStats.kmh must be > 0; CC is undefined at zero speed (got kmh={self.kmh})"
+            )
 
 
 def cc_trial_2_3_mean(trials: list[TrialStats]) -> float | None:
@@ -144,9 +156,11 @@ def compute_confounders(
     density_b = (work_b / baseline_total_session_dur) if baseline_total_session_dur else None
     density_r = (work_r / recent_total_session_dur) if recent_total_session_dur else None
 
+    # kmh_avg > 0 is guaranteed by TrialStats.__post_init__ (each trial's kmh
+    # must be > 0 → mean is too).
     return Confounders(
-        grade_penalty_cc=hr_pen_grade / kmh_avg if kmh_avg else 0,
-        duration_penalty_cc=hr_pen_dur / kmh_avg if kmh_avg else 0,
+        grade_penalty_cc=hr_pen_grade / kmh_avg,
+        duration_penalty_cc=hr_pen_dur / kmh_avg,
         avg_kmh=kmh_avg,
         grade_diff=grade_diff,
         dur_diff=dur_diff,
@@ -293,10 +307,11 @@ def compare_sessions(
     grade_r = pair_r.grade
     cc_b = pair_b.cc
 
+    # pair_r.kmh > 0 is guaranteed by TrialStats.__post_init__.
     cc_normalised_pts = []
     for coef in (grade_coef_bpm_per_pct - 0.5, grade_coef_bpm_per_pct, grade_coef_bpm_per_pct + 0.5):
         adj_aHR = pair_r.avg_hr + (grade_b - grade_r) * coef
-        cc_normalised_pts.append(adj_aHR / pair_r.kmh - cc_b if pair_r.kmh else 0)
+        cc_normalised_pts.append(adj_aHR / pair_r.kmh - cc_b)
 
     hr_normalised_delta = cc_normalised_pts[1]
     hr_normalised_range = (min(cc_normalised_pts), max(cc_normalised_pts))

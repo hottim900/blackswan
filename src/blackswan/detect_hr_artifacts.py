@@ -48,13 +48,11 @@ import sys
 from pathlib import Path
 from statistics import median
 
-try:
-    from garmin_fit_sdk import Decoder, Stream, convert_timestamp_to_datetime
-except ImportError:
-    print("Need garmin-fit-sdk: uvx --with garmin-fit-sdk python ...", file=sys.stderr)
-    sys.exit(1)
+from garmin_fit_sdk import Decoder, Stream, convert_timestamp_to_datetime
 
 from blackswan._sleep import LOCAL_TZ
+
+__all__ = ["detect_artifacts", "trial_flagged_fraction"]
 
 
 def fit_to_local(fit_ts):
@@ -212,6 +210,43 @@ def detect_artifacts(records, mad_multiplier=2.0, min_bpm_deviation=15,
         i = j
 
     return segs, flags, hrs
+
+
+def trial_flagged_fraction(segs, trial_start, trial_end) -> float:
+    """Fraction of [trial_start, trial_end] covered by artifact segments.
+
+    Per ``docs/confounders.md`` §5: when this fraction exceeds 0.4, the entire
+    trial should be excluded from cross-session comparison rather than
+    partially cleaned — the unflagged portion is contaminated by what came
+    before. The detector itself under-flags slow-onset failures, so this
+    overlap calculation is the canonical escalation gate.
+
+    Args:
+        segs: artifact segments from ``detect_artifacts()`` — each dict has
+            ``start_ts`` and ``end_ts`` keys.
+        trial_start, trial_end: trial bounds. Must be the same type as
+            ``segs[i]["start_ts"]`` (datetime objects or numeric epoch seconds);
+            mixing types raises TypeError.
+
+    Returns:
+        Overlap fraction in [0, 1]. Returns 0.0 when ``trial_end <= trial_start``
+        (empty or inverted window) — caller's responsibility to filter those
+        before deciding to exclude.
+    """
+    def _sec(delta):
+        return delta.total_seconds() if hasattr(delta, "total_seconds") else float(delta)
+
+    trial_dur = _sec(trial_end - trial_start)
+    if trial_dur <= 0:
+        return 0.0
+    overlap = 0.0
+    for s in segs:
+        if s["start_ts"] >= trial_end or s["end_ts"] <= trial_start:
+            continue
+        a = max(s["start_ts"], trial_start)
+        b = min(s["end_ts"], trial_end)
+        overlap += _sec(b - a)
+    return overlap / trial_dur
 
 
 def main():

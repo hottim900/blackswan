@@ -126,6 +126,17 @@ def test_compare_sessions_raises_on_too_few_trials():
         compare_sessions(b, r)
 
 
+def test_trial_stats_rejects_zero_kmh():
+    """kmh=0 makes CC undefined; the dataclass enforces this at construction."""
+    with pytest.raises(ValueError, match="kmh must be > 0"):
+        trial(kmh=0.0)
+
+
+def test_trial_stats_rejects_negative_kmh():
+    with pytest.raises(ValueError, match="kmh must be > 0"):
+        trial(kmh=-1.0)
+
+
 def test_compare_sessions_excluded_indices_are_filtered():
     """Excluded trials drop out before metrics — exclusion of an outlier
     pulls trial-2-3 mean closer to baseline."""

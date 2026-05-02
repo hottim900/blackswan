@@ -92,7 +92,13 @@ def extract(bulk_zip: Path, out_dir: Path, target: set[date] | None) -> None:
             print(f"Scanning {inner_name.split('/')[-1]}...")
             with outer.open(inner_name) as f:
                 inner_bytes = f.read()
-            with zipfile.ZipFile(io.BytesIO(inner_bytes)) as inner:
+            try:
+                inner_zip = zipfile.ZipFile(io.BytesIO(inner_bytes))
+            except zipfile.BadZipFile as exc:
+                print(f"  skip corrupted inner zip {inner_name.split('/')[-1]}: {exc}",
+                      file=sys.stderr)
+                continue
+            with inner_zip as inner:
                 fits = inner.namelist()
                 print(f"  {len(fits)} FIT files")
                 for i, name in enumerate(fits, 1):

@@ -220,6 +220,11 @@ def find_uphill_segments(
     return trials
 
 
-def compute_cc(avg_hr: float, kmh: float) -> float:
-    """Cardiac Cost: avg HR ÷ km/h. Lower is more efficient."""
-    return avg_hr / kmh if kmh else 0
+def compute_cc(avg_hr: float, kmh: float) -> float | None:
+    """Cardiac Cost: avg HR / km/h. Lower is more efficient.
+
+    Returns None when kmh <= 0 — CC is undefined at zero or negative speed.
+    """
+    if kmh <= 0:
+        return None
+    return avg_hr / kmh
