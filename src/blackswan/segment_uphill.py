@@ -39,7 +39,6 @@ Usage:
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Optional
 
 __all__ = [
     "find_uphill_trials_in_lap",
@@ -68,7 +67,7 @@ def _records_to_pts(records: list[dict]) -> list[dict]:
     return pts
 
 
-def stats_for_window(records: list[dict], t_start: datetime, t_end: datetime) -> Optional[dict]:
+def stats_for_window(records: list[dict], t_start: datetime, t_end: datetime) -> dict | None:
     """Per-trial stats for a fixed [t_start, t_end] window.
 
     Used for verifying against known-good (hand-marked) training-log timestamps.
@@ -115,7 +114,7 @@ def find_uphill_trials_in_lap(
     lap: dict,
     search_back_s: int = 30,
     min_ascent: float = 8.0,
-) -> Optional[dict]:
+) -> dict | None:
     """Within a single lap, find the alt min → alt max climb sub-segment.
 
     Useful when the user marks each climb with the lap button at the bottom of

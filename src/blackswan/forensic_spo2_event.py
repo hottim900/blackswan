@@ -116,8 +116,8 @@ def main() -> int:
                 d["stress"] = v[0]
 
     print(f"# Forensic timeline for {start.isoformat()} → {end.isoformat()}")
-    print(f"# stage timeline: "
-          + ", ".join(f"{ts.strftime('%H:%M')} {l}" for ts, l in levels
+    print("# stage timeline: "
+          + ", ".join(f"{ts.strftime('%H:%M')} {lvl}" for ts, lvl in levels
                       if start - timedelta(minutes=30) <= ts <= end + timedelta(minutes=30)))
     print()
     print(f"{'time':5} {'stage':8} {'SpO2':>5} {'conf':>4} "

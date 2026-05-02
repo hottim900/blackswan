@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import Optional
 
 __all__ = ["crosscheck_lap_csv", "parse_garmin_lap_csv"]
 

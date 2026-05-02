@@ -56,6 +56,7 @@ except ImportError:
 
 from blackswan._sleep import LOCAL_TZ
 
+
 def fit_to_local(fit_ts):
     return convert_timestamp_to_datetime(fit_ts).astimezone(LOCAL_TZ)
 

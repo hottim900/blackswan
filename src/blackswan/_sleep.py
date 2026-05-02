@@ -11,9 +11,8 @@ Single source of truth for:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
-from typing import Iterable
-
 
 LOCAL_TZ = timezone(timedelta(hours=8))
 

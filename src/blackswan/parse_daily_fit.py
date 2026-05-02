@@ -65,7 +65,7 @@ Usage:
 
 import csv
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import timezone
 from pathlib import Path
 
 from garmin_fit_sdk import (
@@ -164,12 +164,10 @@ def parse_day(day_dir: Path, out_dir: Path):
         # epoch). Reconstruct by substituting low bits; bump high bits when the
         # 16-bit field has wrapped (2^16 s ≈ 18.2 h). Cache prev_fit so the
         # reconstruction chain handles multi-wrap spans correctly.
-        prev_ts = None
         prev_fit = None
         for m in msgs.get("monitoring_mesgs", []):
             ts = m.get("timestamp")
             if ts is not None:
-                prev_ts = ts
                 prev_fit = convert_datetime_to_timestamp(ts)
             elif m.get("timestamp_16") is not None and prev_fit is not None:
                 low = m["timestamp_16"]
@@ -177,7 +175,6 @@ def parse_day(day_dir: Path, out_dir: Path):
                 if low < (prev_fit & 0xFFFF):
                     recon_fit += 0x10000
                 ts = convert_timestamp_to_datetime(recon_fit)
-                prev_ts = ts
                 prev_fit = recon_fit
             if m.get("heart_rate") is not None and ts is not None:
                 hr.append((_local(ts), m["heart_rate"]))

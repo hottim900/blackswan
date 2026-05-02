@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+
+      - name: Install package + dev deps
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: AST parse
+        run: |
+          python -c "
+          import ast, pathlib, sys
+          fails = []
+          for p in sorted(pathlib.Path('src').rglob('*.py')):
+              try:
+                  ast.parse(p.read_text())
+              except SyntaxError as e:
+                  fails.append(f'{p}: {e}')
+          if fails:
+              print('\n'.join(fails)); sys.exit(1)
+          print(f'ast ok: {len(list(pathlib.Path(\"src\").rglob(\"*.py\")))} files')
+          "
+
+      - name: Import smoke
+        run: |
+          python -c "
+          import blackswan.cc_metrics, blackswan.segment_uphill, blackswan.detect_hr_artifacts
+          import blackswan.parse_bulk_export, blackswan.parse_daily_fit, blackswan.batch_extract_fits
+          import blackswan.build_sleep_official, blackswan.analyze_spo2_vs_stage
+          import blackswan.csv_fit_crosscheck, blackswan.forensic_spo2_event, blackswan._sleep
+          print('all 11 modules imported')
+          "
+
+      - name: __all__ exports exist
+        run: |
+          python -c "
+          from blackswan import cc_metrics, segment_uphill, csv_fit_crosscheck
+          for m in (cc_metrics, segment_uphill, csv_fit_crosscheck):
+              missing = [n for n in m.__all__ if not hasattr(m, n)]
+              assert not missing, f'{m.__name__} missing: {missing}'
+          print('__all__ ok')
+          "
