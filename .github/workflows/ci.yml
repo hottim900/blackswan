@@ -60,3 +60,6 @@ jobs:
               assert not missing, f'{m.__name__} missing: {missing}'
           print('__all__ ok')
           "
+
+      - name: Pytest
+        run: pytest tests/ -v
