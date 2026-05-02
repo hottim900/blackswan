@@ -1,0 +1,189 @@
+# blackswan
+
+A pipeline for **Cardiac Cost (CC) analysis** of Garmin FIT data — built around uphill interval training, with rigorous cross-day comparison that survives confounder scrutiny.
+
+> **CC = avg HR ÷ km/h** (lower is more efficient). It's the canonical metric for tracking how your heart responds to a fixed external workload over time.
+
+## Why this exists
+
+Most Garmin analysis tools answer "how was today's session?" by surfacing splits, HR zones, and one-line summaries. This project answers a harder question:
+
+> **"Did this week's intervals show real improvement vs last month's, or is the difference just confounders?"**
+
+Naïvely comparing CC across two interval sessions often produces inflated improvement claims, because:
+
+- **Trial duration** differs by 30%+ → cardiac drift accumulates differently
+- **Average grade** differs by 3% → expected HR shifts ±5 bpm
+- **Rest structure** differs (4 long trials with short rest vs 6 short trials with long rest) → CC favours the latter
+- **HR sensor artifacts** silently distort one or two trials
+- **Mid-session "easy" trials** (an outlier where the user backed off) skew per-trial means
+
+This pipeline detects, quantifies, and corrects each confounder, then reports both the **raw delta** and the **confounder-corrected delta** — so you know how much of the apparent improvement is real.
+
+## What's in here
+
+```
+src/blackswan/
+├── parse_bulk_export.py      # Garmin GDPR bulk export → 10 history CSVs
+├── batch_extract_fits.py     # Bulk export → per-day raw FITs
+├── parse_daily_fit.py        # Per-day raw FITs → 12 minute-level CSVs (HR/SpO2/sleep/HRV/...)
+├── build_sleep_official.py   # Bulk + manual single-day CSVs → sleep SSOT
+├── analyze_spo2_vs_stage.py  # SpO2 × sleep stage cross-day analysis
+├── detect_hr_artifacts.py    # Activity FIT → optical HR sensor failure detection
+├── segment_uphill.py         # Activity FIT → climb segments (alt min → alt max)
+├── csv_fit_crosscheck.py     # Garmin Connect lap CSV ↔ FIT lap_mesgs validation
+├── cc_metrics.py             # CC trial-2-3 / back-half + confounder correction
+├── forensic_spo2_event.py    # Sustained-desaturation event reconstruction
+└── _sleep.py                 # shared sleep-stage utilities
+```
+
+## Quickstart
+
+```bash
+# Install
+pip install garmin-fit-sdk
+# or with uv
+uv pip install garmin-fit-sdk
+
+# Clone + dev install
+git clone https://github.com/hottim900/blackswan
+cd blackswan
+uv pip install -e .   # or: pip install -e .
+```
+
+### Pipeline overview
+
+```
+Garmin GDPR bulk export.zip                    Manual single-day CSVs (recent days)
+   │                                                              │
+   ├── parse_bulk_export      → history/*.csv                     │
+   │                                  │                           │
+   │                                  └─── build_sleep_official ──┘
+   │                                            ↓
+   │                                    sleep-official.csv (SSOT)
+   │
+   └── batch_extract_fits      → raw-fit/YYYY-MM-DD/
+            │
+            └── parse_daily_fit   → daily/*.csv
+                     │
+                     └── analyze_spo2_vs_stage  → analysis/*.csv
+
+Activity FIT (workout)
+   │
+   ├── detect_hr_artifacts    → flag optical HR sensor failures
+   ├── csv_fit_crosscheck     → validate vs Garmin Connect CSV
+   ├── segment_uphill         → per-climb stats (CC, HR, grade)
+   └── cc_metrics             → cross-session comparison + confounder correction
+```
+
+### One-shot example: comparing two interval sessions
+
+```python
+from garmin_fit_sdk import Decoder, Stream
+from blackswan.segment_uphill import find_uphill_trials_in_lap
+from blackswan.cc_metrics import TrialStats, compare_sessions
+
+def session_to_trials(fit_path, work_lap_indices):
+    msgs, _ = Decoder(Stream.from_file(fit_path)).read()
+    laps = msgs["lap_mesgs"]
+    records = msgs["record_mesgs"]
+    trials = []
+    for i in work_lap_indices:
+        s = find_uphill_trials_in_lap(records, laps[i])
+        if s:
+            trials.append(TrialStats(**{
+                k: s[k] for k in ("dur", "dist", "kmh", "grade",
+                                   "start_hr", "avg_hr", "max_hr", "cc")
+            }))
+    return trials
+
+baseline = session_to_trials("baseline.fit", work_lap_indices=[1, 2, 3, 4])  # 4 trials
+recent   = session_to_trials("recent.fit",   work_lap_indices=[2, 3, 4, 5, 6, 7])  # 6 trials
+
+report = compare_sessions(
+    baseline_trials=baseline,
+    recent_trials=recent,
+    excluded_indices_recent={0, 4},  # trial 1 = sensor failure, trial 5 = outlier
+)
+print(report.summary())
+```
+
+Output:
+```
+=== CC comparison ===
+  Baseline: n=4 working trials
+  Recent:   n=6 input → 4 after excluding [0, 4]
+
+  Confounder amplification: +1.70 CC
+    grade Δ +2.9% → +0.89
+    dur   Δ +32s  → +0.81
+
+  CC trial 2-3 mean: raw -2.76 → corrected -1.06
+  CC back half:     raw -3.90 → corrected -2.20
+
+  HR-grade-normalised speed delta: -0.32 CC (range [-0.82, +0.19])
+
+  Day-to-day noise floor: ±1.65 CC (≈5% of baseline mean). Corrected deltas within this band are indistinguishable from noise.
+```
+
+The corrected delta is the headline number. Raw -2.76 → corrected -1.06 falls **inside the noise floor (±1.65)**, meaning it's statistically indistinguishable from "no change" — not the 8% improvement the raw number suggested.
+
+## Methodology — 4-Layer Analysis
+
+When you have a workout to interpret, lock layers in order. Don't move to Layer N+1 until Layer N is reviewer-approved.
+
+| Layer | Question | Output |
+|-------|----------|--------|
+| **1. Hard facts** | What happened? | Raw measurements, single-session, no comparison, no interpretation |
+| **2. Internal dynamics** | What patterns are inside this session? | Trial-internal HR drift, HRR, stdev, cadence-HR decoupling, sensor sanity |
+| **3. Cross-session comparison** | How does it compare to baseline? | CC deltas + confounder-corrected deltas |
+| **4. Take-home / interpretation** | What does it mean for training? | Bounded by training science (e.g. 6 days is not enough for aerobic adaptation) |
+
+Each layer freezes its conclusions before the next layer can touch them. This prevents conclusions from drifting across review rounds — a real failure mode when a single confounder cascades into 4 layers of revised interpretation.
+
+See [`docs/methodology.md`](docs/methodology.md) for the full protocol.
+
+## Authoritative segmentation
+
+The "trial" boundaries used throughout this pipeline are **alt min → alt max** — the climb starts at the local altitude minimum (the bottom of the climb) and ends at the local maximum (the top). This is reverse-engineered from a hand-marked training log: the algorithm output matches the analyst's manual marks within 1–8 seconds and < 0.1 CC points across n=4 trials.
+
+See [`docs/authoritative-segmentation.md`](docs/authoritative-segmentation.md) for the validation method and why other obvious choices (lap_mesgs boundaries, "stop → stop" logic, simple altitude rising windows) all systematically fail.
+
+## Confounders
+
+Cross-day comparison is hard because:
+
+| Confounder | Typical magnitude | Correction |
+|------------|-------------------|------------|
+| Grade differs | 1.5 bpm per grade-% | linear penalty |
+| Duration differs | 5–10 bpm/min cardiac drift | (Δdur ÷ 60) × drift |
+| Rest structure | 30%+ rest time density swing | report work-time density side-by-side |
+| HR sensor artifacts | One trial silently invalid | escalate: `flagged_sec / trial_dur > 0.4` → exclude entire trial |
+| Outlier trials | One trial 15+ bpm below neighbours | manual exclusion + document criterion before Layer 3 |
+| Lap-button habit | Bottom vs top-of-climb pressing | use alt min → alt max, not lap boundaries |
+| Final-trial speed | "Last trial was +20% faster!" can be 100% duration confound | duration-pair before claiming improvement (180s trial vs 90s trial is anaerobic vs aerobic — different effort modes) |
+| HRmax with n ≤ 2 | A "new max" or "missed max" by 5 bpm | within day-to-day SD (±5 bpm); flag provisional until n ≥ 4 |
+
+See [`docs/confounders.md`](docs/confounders.md) for each one's signature, detection, and correction formula.
+
+## Contributing
+
+Before submitting a PR, run a **PII sweep across the entire repo (not just code)** — see the PII lens checklist in [`docs/methodology.md` § "Multi-angle review"](docs/methodology.md#multi-angle-review-run-reviewers-in-parallel-not-series) for the specific sweep targets and why a `grep` over `*.py` alone is insufficient.
+
+## Status
+
+Alpha. The pipeline has been validated against hand-marked training-log data (per-trial CC matches manual marks within 0.15 points across n=4 trials). API may still change.
+
+- ✅ Bulk export parsing
+- ✅ Per-day FIT parsing
+- ✅ Sleep SSOT synthesis
+- ✅ HR artifact detection
+- ✅ Authoritative climb segmentation (validated against hand-marked log)
+- ✅ CC + confounder correction
+- ⏳ Synthetic-data examples
+- ⏳ Tests with synthetic FITs
+- ⏳ pip install from PyPI
+
+## License
+
+MIT

@@ -1,0 +1,42 @@
+[project]
+name = "blackswan"
+version = "0.1.0"
+description = "Cardiac Cost analysis pipeline for Garmin FIT data — uphill interval training, sleep stages, HR artifacts, cross-day comparison."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "hottim900" }]
+keywords = ["garmin", "fit", "cardiac-cost", "interval-training", "training-analysis", "uphill"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "garmin-fit-sdk>=21.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/hottim900/blackswan"
+Issues = "https://github.com/hottim900/blackswan/issues"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

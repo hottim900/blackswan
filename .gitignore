@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Personal data — NEVER commit
+*.fit
+*.csv
+*.tcx
+*.gpx
+garmin/
+raw-fit/
+bulk-exports/
+timeseries/
+analysis/
+sleep/
+hrv/
+respiration/
+activities/
+screenshots/
+
+# Examples should use synthetic data only
+examples/data/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Claude Code project memory (local only)
+CLAUDE.md
