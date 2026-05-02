@@ -36,5 +36,6 @@ examples/data/
 *.swp
 .DS_Store
 
-# Claude Code project memory (local only)
+# Claude Code (local only)
 CLAUDE.md
+.claude/
