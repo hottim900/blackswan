@@ -24,17 +24,22 @@ This pipeline detects, quantifies, and corrects each confounder, then reports bo
 
 ```
 src/blackswan/
-├── parse_bulk_export.py      # Garmin GDPR bulk export → 10 history CSVs
-├── batch_extract_fits.py     # Bulk export → per-day raw FITs
-├── parse_daily_fit.py        # Per-day raw FITs → 12 minute-level CSVs (HR/SpO2/sleep/HRV/...)
-├── build_sleep_official.py   # Bulk + manual single-day CSVs → sleep SSOT
-├── analyze_spo2_vs_stage.py  # SpO2 × sleep stage cross-day analysis
-├── detect_hr_artifacts.py    # Activity FIT → optical HR sensor failure detection
-├── segment_uphill.py         # Activity FIT → climb segments (alt min → alt max)
-├── csv_fit_crosscheck.py     # Garmin Connect lap CSV ↔ FIT lap_mesgs validation
-├── cc_metrics.py             # CC trial-2-3 / back-half + confounder correction
-├── forensic_spo2_event.py    # Sustained-desaturation event reconstruction
-└── _sleep.py                 # shared sleep-stage utilities
+├── parse_bulk_export.py             # Garmin GDPR bulk export → 10 history CSVs
+├── batch_extract_fits.py            # Bulk export → per-day raw FITs
+├── parse_daily_fit.py               # Per-day raw FITs → 12 minute-level CSVs (HR/SpO2/sleep/HRV/...)
+├── build_sleep_official.py          # Bulk + manual single-day CSVs → sleep SSOT
+├── analyze_spo2_vs_stage.py         # SpO2 × sleep stage cross-day analysis
+├── detect_hr_artifacts.py           # Activity FIT → optical HR sensor failure detection
+├── segment_uphill.py                # Activity FIT → climb segments (alt min → alt max)
+├── csv_fit_crosscheck.py            # Garmin Connect lap CSV ↔ FIT lap_mesgs validation
+├── cc_metrics.py                    # CC trial-2-3 / back-half + confounder correction
+├── parse_strength_fit.py            # Strength FIT → StrengthSession / StrengthSet
+├── segment_strength_sets.py         # Active sets → ExerciseGroup heuristic
+├── detect_strength_hr_artifact.py   # Early-session optical-HR artifact (experimental)
+├── strength_metrics.py              # Cross-session strength comparison + pairing
+├── forensic_spo2_event.py           # Sustained-desaturation event reconstruction
+├── _sleep.py                        # shared sleep-stage utilities
+└── _time.py                         # shared LOCAL_TZ constant (UTC+8)
 ```
 
 ## Quickstart
@@ -74,6 +79,13 @@ Activity FIT (workout)
    ├── csv_fit_crosscheck     → validate vs Garmin Connect CSV
    ├── segment_uphill         → per-climb stats (CC, HR, grade)
    └── cc_metrics             → cross-session comparison + confounder correction
+
+Strength FIT (sport=training, sub_sport=strength_training)
+   │
+   ├── parse_strength_fit            → StrengthSession + per-set HR
+   ├── segment_strength_sets         → ExerciseGroup (weight × reps adjacency)
+   ├── detect_strength_hr_artifact   → EARLY_DEFICIT_LATE_NORMAL signature (experimental)
+   └── strength_metrics              → cross-session pairing + Δ HR + artifact flags
 ```
 
 ### One-shot example: comparing two interval sessions
@@ -128,6 +140,47 @@ Output:
 
 The corrected delta is the headline number. Raw -2.76 → corrected -1.06 falls **inside the noise floor (±1.65)**, meaning it's statistically indistinguishable from "no change" — not the 8% improvement the raw number suggested.
 
+## Strength training analysis (experimental)
+
+Cross-session strength comparison with optical-HR artifact detection. Calibrated on n=5 single-user vivoactive 5 sessions — see [`docs/confounders.md` § 9](docs/confounders.md) for the calibration confound caveat.
+
+The pipeline pairs per-set HR between two sessions on `(active_idx, weight, reps)` and reports the per-pair HR delta. The detector flags an `EARLY_DEFICIT_LATE_NORMAL` shape when early sets read suspiciously low and late sets normalise — a pattern consistent with cold capillary perfusion, grip vasoconstriction, wrist tension, or watch fit (umbrella term: "early-session optical-HR artifact").
+
+```python
+from blackswan.strength_metrics import compare_strength_sessions
+
+report = compare_strength_sessions("baseline.fit", "recent.fit")
+print(report.summary())
+```
+
+Run the bundled quickstart against synthetic FITs:
+
+```bash
+uv run python -m examples.quickstart_strength
+```
+
+Sample output (synthetic baseline vs recent — recent has cold-start artifact in the first 3 work sets):
+
+```
+=== Strength comparison ===
+  Baseline: 2000-01-15 18:30 (7 active stats)
+  Recent:   2000-02-15 18:30 (7 active stats)
+
+  Pairs matched: 7 (exact_slot: 7, exercise_level: 0)
+  HR Δ exact_slot: -22.1 bpm
+  HR Δ all pairs:  -22.1 bpm
+
+  Artifact (experimental detector): baseline CLEAN, recent EARLY_DEFICIT_LATE_NORMAL
+  Artifact warnings:
+    [recent] EARLY_DEFICIT_LATE_NORMAL: 3 early-window sets below threshold
+    [recent]   active_idx=1: hr_avg=72 < 90 AND hr_avg=72 <= ref 120 - 25
+    [recent]   late_median 132 - early_median 82 = +50 bpm (>= 30)
+```
+
+The detector flag is **advisory** — it does NOT auto-exclude flagged sets. Pass `excluded_indices_recent={...}` (or `excluded_indices_baseline`) on a re-run to drop sets you decide to ignore. Decide BEFORE running compare; re-running with different exclusions until the delta looks right is exclusion shopping (see [`CLAUDE.md`](CLAUDE.md)).
+
+**Don't compare strength deltas against cardio's ±5% noise floor.** Cardio's ±3-5 bpm was calibrated against uphill intervals at constant external workload; strength load varies set-to-set so the noise floor doesn't transfer. v1 reports raw `hr_delta_stdev` and `hr_delta_iqr` as advisory only.
+
 ## Methodology — 4-Layer Analysis
 
 When you have a workout to interpret, lock layers in order. Don't move to Layer N+1 until Layer N is reviewer-approved.
@@ -180,8 +233,9 @@ Alpha. The pipeline has been validated against hand-marked training-log data (pe
 - ✅ HR artifact detection
 - ✅ Authoritative climb segmentation (validated against hand-marked log)
 - ✅ CC + confounder correction
-- ⏳ Synthetic-data examples
-- ⏳ Tests with synthetic FITs
+- ⚗️ Strength training analysis (experimental, vivoactive 5 only, n=5)
+- ✅ Synthetic-data examples (cardio TBD; strength shipped)
+- ✅ Tests with synthetic FITs (strength)
 - ⏳ pip install from PyPI
 
 ## License

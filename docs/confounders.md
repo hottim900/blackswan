@@ -68,6 +68,8 @@ cc_penalty = hr_penalty / avg_kmh
 
 ### 5. HR sensor artifacts (optical wrist HR)
 
+**Scope:** cardio interval sessions. Strength training has its own optical-HR failure pattern — see § 9 — because strength sessions go from rest into a high-grip, isometric load before the wrist sensor has time to stabilise. The cardio detector below targets sustained baseline-stuck windows during steady running/hiking; the strength detector targets early-session deficits that recover late. Different shapes, different detectors.
+
 **Effect**: optical HR sensors can lock to a baseline value during cold capillary perfusion (typical first 5–10 minutes of activity in cool weather) or during high motion. The recorded HR can be 30+ bpm below true.
 
 **Magnitude**: A trial with 80s of physio-implausibly-low HR (e.g. 110 bpm at 5 km/h on 25% grade where expected is 145+) reads CC ~26 instead of ~32. That's a 6-point distortion that looks like a great workout.
@@ -96,11 +98,13 @@ Don't make outlier exclusion a free parameter — pick a rule before looking at 
 
 ### 7. Day-to-day biological noise
 
+**Scope:** cardio CC. The ±5% / ±3–5 bpm figures below were calibrated on uphill intervals at constant external workload — they do NOT transfer to strength training where load varies set-to-set. Strength uses its own dispersion measures (raw `hr_delta_stdev` and `hr_delta_iqr`); see § 9.
+
 **Effect**: Sleep, hydration, ambient temperature, time-of-day, food intake all shift HR by 3–5 bpm at the same external workload. Two sessions taken on the same fitness can read 5% different in CC.
 
 **Magnitude**: ±5% on CC. For CC = 33, that's ±1.6 points.
 
-**Fix**: this is the **noise floor**. Any corrected delta smaller than this is statistically indistinguishable from "no change". Don't claim improvement (or regression) within ±5%.
+**Fix**: this is the **noise floor** for cardio CC. Any corrected delta smaller than this is statistically indistinguishable from "no change". Don't claim improvement (or regression) within ±5%.
 
 `compare_sessions()` computes this automatically as `cc_noise_floor` and prints it in the report — you don't need to compute it by hand.
 
@@ -111,6 +115,51 @@ Don't make outlier exclusion a free parameter — pick a rule before looking at 
 **Magnitude**: ±5 bpm uncertainty when n ≤ 2 observations.
 
 **Fix**: see [`methodology.md` Layer 4 hard constraints](methodology.md). Treat HRmax-derived zone boundaries as **provisional until n ≥ 4** observations across varied conditions.
+
+### 9. Early-session optical-HR artifact (strength)
+
+**Scope.** Strength training only. Cardio interval sessions warm up gradually so the wrist sensor has 5+ minutes to stabilise before the first work trial; strength sessions go from `set 1` directly into a high-grip, isometric load that suppresses surface perfusion. The artifact catalogued here is qualitatively different from § 5 and is the dominant cross-session confounder we observe in vivoactive 5 strength data.
+
+**Causes (umbrella term: "early-session optical-HR artifact").**
+
+1. **Cold capillary perfusion** — same mechanism as § 5, but worse for strength because the user has not warmed up.
+2. **Grip vasoconstriction** — squeezing a barbell / dumbbell mechanically reduces blood flow to the wrist, causing the optical sensor to under-read for the duration of the set.
+3. **Wrist tension / watch fit** — bracing under load deforms the wrist; if the strap is loose (most users) the sensor decouples from skin between reps.
+
+The detector ships a single signature `EARLY_DEFICIT_LATE_NORMAL`. It does NOT distinguish causes — they all produce the same shape (early sets read suspiciously low, late sets read normal once perfusion recovers).
+
+**Magnitude (n=5 vivoactive 5, single user).** Pairing identical `(set_idx, weight, reps)` slots between two routines:
+
+| set range | mean HR Δ (afternoon vs evening) |
+|---|---|
+| set #1–6 | +27 bpm |
+| set #7–9 | +11 bpm |
+| overall | +19 bpm (median +14, range [+10, +40]) |
+
+The shape — large early deficit shrinking late — strongly favours sensor artifact over circadian. The 60kg deadlift evening session reading 58.7 / 68.8 / 79.3 bpm at sets 1–3 is **physiologically implausible** under any non-artifact hypothesis (the load alone forces output above ~100 bpm).
+
+**Detection.** `blackswan.detect_strength_hr_artifact` (signature: `EARLY_DEFICIT_LATE_NORMAL`):
+
+- early window = first min(4, k) active sets where k = sets within 600s of session start
+- late window = back half of active sets (count-based)
+- `early_deficit_count` = early sets with `hr_avg < 90` OR `hr_avg ≤ ref_median - 25`
+- `late_normal` = ≥1 late set with `hr_avg ≥ 115` OR `late_median - early_median ≥ 30`
+- flag if `early_deficit_count ≥ 2 AND late_normal`
+
+Single-session mode (no reference) uses absolute thresholds only; comparison mode uses both absolute and relative thresholds against the baseline.
+
+**Confidence cap (n=5 calibration).** P3 confidence is **5–6/10**, not 7+. Two reviewers independently flagged the same problem: in our 5-session calibration sample, time-of-day and chronology are completely confounded (the 3 evening sessions are all 3–6 weeks earlier than the 2 afternoon sessions). We cannot rule out chronology drift from the available data. The detector ships `experimental` until n ≥ 10 across multiple devices.
+
+**Don't.** Do NOT exclude flagged sets from `pairs[]` automatically. The flag is an interpretive hint surfaced via `StrengthComparisonReport.artifact_warnings` — the user decides whether to re-run with `excluded_indices_*`. Auto-exclusion would be exclusion shopping (CLAUDE.md anti-pattern).
+
+**Why strength ≠ cardio noise floor.** The cardio § 7 ±5% / ±3–5 bpm noise floor was calibrated against uphill intervals at constant external workload. It does not transfer to strength: strength load varies set-to-set (warm-up vs work, weight changes, exercise changes), and per-set HR is averaged over 30–120s of dynamic effort, not steady-state. v1 strength reports `hr_delta_stdev` and `hr_delta_iqr` raw and labels them `provisional`; do NOT compare them against ±3–5 bpm.
+
+**Fix (when `EARLY_DEFICIT_LATE_NORMAL` fires).**
+
+1. Read the warning in `report.artifact_warnings` — it names the triggering set indices.
+2. Decide IF you want to exclude — sometimes the artifact is real signal ("I gripped harder today, that affects my HR reading"), sometimes it's noise.
+3. If excluding: pass `excluded_indices_recent` / `excluded_indices_baseline` and re-run. Both passes' `pairs[]` are exhaustive; the flag does not pre-filter.
+4. If both sessions show the artifact in similar slots, the deltas at those slots are uninterpretable — do NOT claim "+19 bpm fitness regression" without first ruling artifact out.
 
 ## Composite correction example
 
