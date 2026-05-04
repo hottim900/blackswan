@@ -23,6 +23,7 @@ from blackswan.parse_strength_fit import (
     StrengthSession,
     StrengthSet,
     parse_strength_fit,
+    parse_strength_fit_from_msgs,
 )
 from blackswan.segment_strength_sets import (
     ExerciseGroup,
@@ -48,6 +49,7 @@ __all__ = [
     "compare_strength_sessions",
     "compare_strength_sessions_from_stats",
     "parse_strength_fit",
+    "parse_strength_fit_from_msgs",
     "identify_exercises",
     "detect_strength_hr_artifact",
     # strength — dataclasses

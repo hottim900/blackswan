@@ -17,7 +17,7 @@ def test_identify_exercises_groups_consecutive_same_signature():
     sess = build_session(weights=[60, 60, 60], reps=[8, 8, 8])
     groups = identify_exercises(sess)
     assert len(groups) == 1
-    assert groups[0].name == "60.0kg x 8"
+    assert groups[0].name == "60.0kg × 8"
     assert len(groups[0].sets) == 3
 
 
@@ -25,7 +25,7 @@ def test_identify_exercises_splits_on_signature_change():
     sess = build_session(weights=[60, 60, 80], reps=[8, 8, 5])
     groups = identify_exercises(sess)
     assert len(groups) == 2
-    assert [g.name for g in groups] == ["60.0kg x 8", "80.0kg x 5"]
+    assert [g.name for g in groups] == ["60.0kg × 8", "80.0kg × 5"]
 
 
 def test_identify_exercises_respects_max_rest_gap():
@@ -74,14 +74,14 @@ def test_identify_exercises_warmup_detected_by_first_group_high_reps_zero_weight
     sess = build_session(weights=[0.0, 60, 60], reps=[15, 8, 8])
     groups = identify_exercises(sess)
     assert groups[0].name == "warmup"
-    assert groups[1].name == "60.0kg x 8"
+    assert groups[1].name == "60.0kg × 8"
 
 
 def test_identify_exercises_bodyweight_when_zero_weight_not_in_first_group():
     sess = build_session(weights=[60, 0.0], reps=[8, 12])
     groups = identify_exercises(sess)
     # Mid-session zero-weight low-rep is bodyweight, not warmup
-    assert groups[0].name == "60.0kg x 8"
+    assert groups[0].name == "60.0kg × 8"
     assert groups[1].name == "bodyweight"
 
 

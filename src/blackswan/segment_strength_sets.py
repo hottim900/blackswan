@@ -1,14 +1,14 @@
 """Group strength-training sets into logical exercises.
 
 A `StrengthSession.sets` list mixes active and rest sets in chronological
-order. We want logical groupings like "5 sets of 60kg x 8 reps". This module
+order. We want logical groupings like "5 sets of 60kg × 8 reps". This module
 applies a heuristic: walk the sets in order; group adjacent active sets with
 the same ``(weight, reps)``, where adjacent means "separated only by rest
 sets, with at most ``max_rest_gap`` rest sets between".
 
 The heuristic is designed for routine-style sessions (do all sets of one
 exercise, rest, move to next exercise). It splits supersets / unilateral
-work — e.g. ``(60kg x 8) -> (40kg x 10) -> (60kg x 8) -> ...`` returns six
+work — e.g. ``(60kg × 8) -> (40kg × 10) -> (60kg × 8) -> ...`` returns six
 groups, not two — because there is no exercise-name signal in the FIT to
 disambiguate.
 
@@ -55,7 +55,7 @@ def _group_name(weight: float | None, reps: int | None, is_first_group: bool) ->
 
     - ``weight=None`` or (``weight=0`` AND ``reps>=10`` AND first group) → "warmup"
     - ``weight=0`` and ``reps>0`` (not warmup) → "bodyweight"
-    - ``weight>0`` → ``f"{weight}kg x {reps}"``
+    - ``weight>0`` → ``f"{weight}kg × {reps}"``
     """
     if weight is None:
         return "warmup"
@@ -63,7 +63,7 @@ def _group_name(weight: float | None, reps: int | None, is_first_group: bool) ->
         if reps is not None and reps >= 10 and is_first_group:
             return "warmup"
         return "bodyweight"
-    return f"{weight}kg x {reps}"
+    return f"{weight}kg × {reps}"
 
 
 def identify_exercises(

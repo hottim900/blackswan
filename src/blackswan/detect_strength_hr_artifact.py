@@ -146,7 +146,13 @@ def detect_strength_hr_artifact(
     """
     active = _active_sets(session)
     n_active = len(active)
-    if n_active == 0:
+    if n_active < 4:
+        # Detector splits active sets into early window (first <=4) and a
+        # late window starting at ceil(n/2). With n<4 the two windows
+        # overlap (at n=2 both contain active_idx=1) or are degenerate, so
+        # the early-vs-late comparison is not meaningful. Return CLEAN
+        # explicitly rather than relying on the threshold rules to
+        # accidentally produce CLEAN via short circuits.
         return StrengthHRArtifactSignature.CLEAN, []
 
     # Build early window: first min(early_max_count, k) active sets where

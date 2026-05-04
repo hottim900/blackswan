@@ -11,6 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: PII grep
+        run: bash scripts/check-pii.sh
+
       - name: Set up uv
         uses: astral-sh/setup-uv@v3
 

@@ -43,6 +43,15 @@ __all__ = [
 VIVOACTIVE_5 = "vivoactive5"  # canonical SDK string (no underscore)
 KNOWN_SET_TYPES = ("active", "rest")
 
+_WEIGHT_ROUND_DP = 2
+"""Decimal places we round set weights to at parser exit. Garmin's FIT
+weight scale is 16 (so 0.0625 kg per integer step), and float arithmetic in
+the SDK can leak residual noise like 60.0 vs 60.0000001. Rounding to 2dp at
+the parser gives every downstream consumer a canonical value, so weight
+comparisons (greedy bucket matching, ref-set lookup, exercise grouping)
+can stay on plain ``==`` without the float-equality landmine called out in
+CLAUDE.md."""
+
 
 @dataclass
 class StrengthSet:
@@ -244,6 +253,9 @@ def parse_strength_fit_from_msgs(
         else:
             hr_next60s_avg = None
 
+        weight_raw = raw.get("weight")
+        weight = round(weight_raw, _WEIGHT_ROUND_DP) if weight_raw is not None else None
+
         sets.append(
             StrengthSet(
                 set_idx=raw_idx,
@@ -252,7 +264,7 @@ def parse_strength_fit_from_msgs(
                 t_start=t_start,
                 t_end=t_end,
                 duration=duration,
-                weight=raw.get("weight"),
+                weight=weight,
                 reps=raw.get("repetitions"),
                 raw_category=raw.get("category"),
                 raw_category_subtype=raw.get("category_subtype"),

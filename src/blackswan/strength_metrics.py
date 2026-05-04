@@ -102,16 +102,51 @@ class MatchedPair:
     """Sign convention: ``hr_delta = recent.hr_avg - baseline.hr_avg``.
     Positive = recent HR higher (could indicate fatigue, lower fitness, or
     recovered-sensor artifact; interpretation requires the report's
-    ``artifact_warnings``)."""
+    ``artifact_warnings``).
+
+    ``match_quality`` values:
+
+    * ``"exact_slot"`` — same ``(active_idx, weight, reps)`` in both
+      sessions. Strongest match: same exercise position in the routine.
+    * ``"exercise_level"`` — same ``(weight, reps)`` but different
+      ``active_idx``. Greedy fallback picks the recent set whose
+      ``active_idx`` is closest to baseline's.
+    * ``"bucket_exhausted"`` — reserved enum value: a baseline set had a
+      matching ``(weight, reps)`` bucket in recent, but the bucket was
+      drained by earlier greedy picks. v1 lists the baseline set under
+      ``unmatched_baseline`` and surfaces the count in ``notes``;
+      globally-closest bipartite assignment is deferred (see TODOS.md).
+      No ``MatchedPair`` currently carries this value at runtime.
+    """
 
     baseline: StrengthSetStats
     recent: StrengthSetStats
     hr_delta: float
-    match_quality: Literal["exact_slot", "exercise_level"]
+    match_quality: Literal["exact_slot", "exercise_level", "bucket_exhausted"]
 
 
 @dataclass
 class StrengthComparisonReport:
+    """Cross-session strength comparison output.
+
+    Field semantics:
+
+    * ``pairs`` — one ``MatchedPair`` per baseline set that found a recent
+      counterpart, in the order matching ran (exact_slot first, then
+      exercise_level greedy).
+    * ``unmatched_baseline`` — baseline ``StrengthSetStats`` with no
+      remaining ``(weight, reps)`` match in unpaired recent sets at
+      iteration time. Includes both "no recent bucket existed" and
+      "bucket drained by earlier greedy picks" cases; the latter count is
+      surfaced in ``notes`` and references the ``bucket_exhausted``
+      placeholder enum value on ``MatchedPair.match_quality``.
+    * ``unmatched_recent`` — same in reverse: recent stats whose
+      ``(weight, reps)`` did not appear in baseline (or did but the
+      baseline bucket was drained first).
+    * ``notes`` — running list of caveats (exclusions, ambiguous grouping,
+      bucket-exhausted counts).
+    """
+
     baseline: StrengthSessionStats
     recent: StrengthSessionStats
 
@@ -340,10 +375,18 @@ def compare_strength_sessions_from_stats(
     recent_buckets: dict[tuple[float, int], list[StrengthSetStats]] = {}
     for r in unpaired_r:
         recent_buckets.setdefault((r.weight, r.reps), []).append(r)
+    # Snapshot which (weight, reps) keys had any candidate at all so we can
+    # distinguish "no bucket existed" from "bucket drained by earlier picks"
+    # after the greedy pass — surfaced as bucket_exhausted in notes.
+    initially_present: set[tuple[float, int]] = set(recent_buckets)
+    bucket_exhausted_count = 0
 
     for b in unpaired_b:
-        bucket = recent_buckets.get((b.weight, b.reps))
+        key = (b.weight, b.reps)
+        bucket = recent_buckets.get(key)
         if not bucket:
+            if key in initially_present:
+                bucket_exhausted_count += 1
             continue
         chosen = min(bucket, key=lambda r: abs(r.active_idx - b.active_idx))
         bucket.remove(chosen)
@@ -382,7 +425,10 @@ def compare_strength_sessions_from_stats(
 
     hr_delta_iqr: float | None = None
     if n_pairs >= 4:
-        cuts = quantiles(deltas, n=4)
+        # method='exclusive' is Python's default but pin it explicitly: the
+        # IQR is reported in the summary and we want the documented method
+        # not whatever a future stdlib bump might switch the default to.
+        cuts = quantiles(deltas, n=4, method="exclusive")
         hr_delta_iqr = cuts[2] - cuts[0]
 
     baseline_sig, baseline_warns = detect_strength_hr_artifact(
@@ -441,6 +487,14 @@ def compare_strength_sessions_from_stats(
             f"ambiguous grouping: {n_ambiguous} (weight, reps) bucket(s) appeared "
             "non-contiguously across active sets — suspected superset / unilateral "
             "pattern. Pairing still produced numeric deltas but treat them as advisory."
+        )
+
+    if bucket_exhausted_count:
+        notes.append(
+            f"bucket_exhausted: {bucket_exhausted_count} baseline set(s) had a "
+            "matching (weight, reps) in recent, but the bucket was drained by "
+            "earlier greedy picks. Globally-closest bipartite matching would "
+            "recover these — deferred, see TODOS.md."
         )
 
     return StrengthComparisonReport(

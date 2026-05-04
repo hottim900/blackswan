@@ -7,12 +7,14 @@ idempotency, and Decoder option pinning per V2 test plan addendum.
 from __future__ import annotations
 
 import copy
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from blackswan.parse_strength_fit import (
     StrengthSession,
+    parse_strength_fit,
     parse_strength_fit_from_msgs,
 )
 from tests._strength_helpers import build_strength_msgs
@@ -103,7 +105,7 @@ def test_device_product_returns_none_when_device_info_missing():
 def test_hr_next60s_avg_clipped_when_window_exceeds_session_end():
     """When the last set ends close to session end, hr_next60s_avg should
     use the clipped window — and become None when the clipped window has
-    no records."""
+    no records (short-circuit branch)."""
     msgs = build_strength_msgs(
         weights=[60], reps=[8],
         rest_between=0.0, set_dur=60.0,
@@ -115,6 +117,49 @@ def test_hr_next60s_avg_clipped_when_window_exceeds_session_end():
     assert last_active.hr_next60s_avg is None
 
 
+def test_hr_next60s_avg_clip_excludes_records_past_session_end():
+    """T-PARSE-7-EXT (clip branch): the actual clip ``min(t_end+60, session_end)``
+    must drop records beyond ``session_end`` even if records exist there. This
+    is the branch the short-circuit test above does NOT cover.
+
+    Setup: set 0-60s, session ends at 80s. Records span 0-120s with
+    distinct HR in three buckets:
+      - 0-60s @ 130 bpm (during the set)
+      - 60-80s @ 150 bpm (post-set, in-session)
+      - 80-120s @ 200 bpm (past session_end — phantom)
+
+    With clip: window [60, 80] → average over 20 records of 150 bpm = 150.
+    Without clip: window [60, 120] → mixes 150 and 200 → ~175. The
+    assertion catches a regression that drops the ``min(...)``.
+    """
+    msgs = build_strength_msgs(
+        weights=[60], reps=[8],
+        rest_between=0.0, set_dur=60.0,
+        session_total_elapsed_time=80.0,  # session ends 20s after the set
+    )
+    set_start = msgs["set_mesgs"][0]["start_time"]
+    records = []
+    for sec in range(60):
+        records.append({"timestamp": set_start + timedelta(seconds=sec), "heart_rate": 130})
+    # In-session post-set records (60-80s, inclusive of the 80s boundary
+    # since _hr_records_in uses ``<= t_end``).
+    for sec in range(60, 81):
+        records.append({"timestamp": set_start + timedelta(seconds=sec), "heart_rate": 150})
+    # Phantom records strictly past session_end (sec >= 81). The clip
+    # ``min(t_end + 60, session_end)`` must exclude these.
+    for sec in range(82, 121):
+        records.append({"timestamp": set_start + timedelta(seconds=sec), "heart_rate": 200})
+    msgs["record_mesgs"] = records
+
+    sess = parse_strength_fit_from_msgs(msgs)
+    last_active = next(s for s in sess.sets if s.set_type == "active")
+    assert last_active.hr_next60s_avg is not None
+    assert abs(last_active.hr_next60s_avg - 150.0) < 0.5, (
+        f"hr_next60s_avg={last_active.hr_next60s_avg} — expected ~150, got "
+        "value contaminated by post-session phantom records (clip regressed)."
+    )
+
+
 # T-CMP-IDEMP: parser idempotency
 def test_parse_strength_fit_from_msgs_is_idempotent():
     msgs = build_strength_msgs(weights=[60, 60], reps=[8, 8])
@@ -123,7 +168,7 @@ def test_parse_strength_fit_from_msgs_is_idempotent():
     assert a == b
 
 
-# T-PARSE-9 partial: timestamps must be timezone-aware, not naive datetime / date
+# T-PARSE-9 (from_msgs path): timestamps timezone-aware, not naive / date
 def test_parse_strength_fit_yields_timezone_aware_datetimes():
     msgs = build_strength_msgs(weights=[60], reps=[8])
     sess = parse_strength_fit_from_msgs(msgs)
@@ -135,6 +180,43 @@ def test_parse_strength_fit_yields_timezone_aware_datetimes():
         assert s.t_start.tzinfo is not None
         assert isinstance(s.t_end, datetime)
         assert s.t_end.tzinfo is not None
+
+
+# T-PARSE-9 (disk path): the from_msgs test above feeds datetime objects in
+# directly so it can't fail when the Decoder pin regresses. This test goes
+# through the full Decoder pipeline and proves the
+# convert_datetimes_to_dates=False pin is actually engaged: if it's removed,
+# the SDK returns date objects, and parse_strength_fit either raises in
+# _to_local (date is not a datetime subclass) or yields .hour=0 — the
+# explicit type+hour assertions below catch both.
+def test_parse_strength_fit_disk_path_pins_decoder_to_datetime(tmp_path: Path):
+    from examples.synthetic_strength_baseline import build_baseline_fit
+
+    fit_path = tmp_path / "baseline.fit"
+    fit_path.write_bytes(build_baseline_fit())
+
+    sess = parse_strength_fit(fit_path)
+
+    # type-check: datetime is a subclass of date, so isinstance(..., date)
+    # passes for datetimes too. type(x) is datetime is the strict check.
+    assert type(sess.start_time) is datetime, (
+        f"start_time type={type(sess.start_time).__name__} — Decoder pin "
+        "convert_datetimes_to_dates=False likely regressed."
+    )
+    for s in sess.sets:
+        assert type(s.t_start) is datetime
+        assert type(s.t_end) is datetime
+
+    # Round-trip sanity: baseline encodes 18:30 LOCAL_TZ. A date object
+    # would have no .hour attribute (would AttributeError before this
+    # comparison), and a datetime stripped to date and re-cast would give
+    # hour=0. 18 is the only correct answer for the disk-path through pin.
+    assert sess.start_time.hour == 18, sess.start_time
+    # Also verify date subclass relation: every set's t_start is a datetime
+    # AND a date (datetime is subclass), but a regression that returns date
+    # would fail the strict type check above first.
+    for s in sess.sets:
+        assert isinstance(s.t_start, date)  # always true for datetime
 
 
 def test_parse_strength_fit_warns_on_non_vivoactive_device():

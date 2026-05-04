@@ -21,6 +21,7 @@ import pytest
 from blackswan._time import LOCAL_TZ
 from blackswan.detect_strength_hr_artifact import StrengthHRArtifactSignature
 from blackswan.parse_strength_fit import parse_strength_fit, parse_strength_fit_from_msgs
+from blackswan.segment_strength_sets import identify_exercises
 from blackswan.strength_metrics import (
     compare_strength_sessions,
     compare_strength_sessions_from_stats,
@@ -119,11 +120,20 @@ def test_excluded_indices_drops_set_from_pairing():
     assert 1 not in paired_recent_indices
 
 
-# T-SEG-2: superset detection surfaces in notes
+# T-SEG-2: superset detection surfaces in notes + groups split correctly
 def test_compare_surfaces_superset_pattern_in_notes():
-    """Alternating supersets (60, 40, 60, 40, 60, 40) → same (weight, reps)
-    appears in 3 separate groups each → notes mention ambiguity."""
+    """Alternating supersets (60, 40, 60, 40, 60, 40) → identify_exercises
+    yields 6 groups (one per active set) because no two adjacent active sets
+    share (weight, reps). The strength_metrics layer then detects this as
+    ambiguous in notes."""
     sess = build_session(active_pattern=[(60, 8), (40, 10), (60, 8), (40, 10), (60, 8), (40, 10)])
+
+    # Direct assertion on the segmenter — catches a regression that merges
+    # adjacent groups even when signatures differ. The note assertion below
+    # only catches one specific downstream consumer; this catches the source.
+    groups = identify_exercises(sess)
+    assert len(groups) == 6
+
     report = compare_strength_sessions_from_stats(stats(sess), stats(sess))
     assert any(
         "ambiguous" in n.lower() or "superset" in n.lower()
@@ -131,15 +141,23 @@ def test_compare_surfaces_superset_pattern_in_notes():
     )
 
 
-# T-SEG-3: unilateral repeated slot
+# T-SEG-3: unilateral repeated slot — known spec gap
 def test_compare_surfaces_repeated_weight_reps_pattern():
     """Two consecutive sets at same (weight, reps) at same active_idx pair
-    fine — but a longer pattern of repeated isolated identical buckets
-    surfaces ambiguity."""
+    fine. No notes ambiguity is expected for contiguous repeats: the
+    ``_count_ambiguous_groupings`` heuristic only flags non-contiguous
+    occurrences (max_idx - min_idx > len - 1), so two adjacent (20, 12)
+    sets correctly produce one group with no ambiguity flag.
+
+    This test pins the n_pairs smoke contract; broader unilateral
+    detection (interleaved L/R sets at the same weight/reps) is a known
+    gap because the FIT spec carries no laterality flag — see TODOS.md.
+    """
     sess = build_session(active_pattern=[(20, 12), (20, 12)])
     report = compare_strength_sessions_from_stats(stats(sess), stats(sess))
-    # n=2 pairs is enough; just ensure no crash and report has the slots
     assert report.n_pairs == 2
+    # And confirm the (correct) absence of a false positive.
+    assert not any("ambiguous" in n.lower() for n in report.notes)
 
 
 # T-CMP-11: full FIT roundtrip wrapper + same-path optimization
