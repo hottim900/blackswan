@@ -74,7 +74,11 @@ class TrialStats:
     def __post_init__(self):
         if self.kmh <= 0:
             raise ValueError(
-                f"TrialStats.kmh must be > 0; CC is undefined at zero speed (got kmh={self.kmh})"
+                f"TrialStats.kmh must be > 0 (got kmh={self.kmh}). "
+                "Cause: distance=0 or duration=0 in the input segment — "
+                "CC is undefined at zero speed and downstream metrics divide by mean(kmh). "
+                "Fix: drop the zero-distance trial before constructing TrialStats, "
+                "or check segment_uphill output for empty windows."
             )
 
 

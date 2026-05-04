@@ -13,6 +13,8 @@ venv/
 
 # Personal data — NEVER commit
 *.fit
+*.FIT
+*.fit.gz
 *.csv
 *.tcx
 *.gpx
@@ -26,6 +28,10 @@ hrv/
 respiration/
 activities/
 screenshots/
+
+# Personal analyses (never commit raw data debriefs)
+*-analysis.md
+*-real-data.md
 
 # Examples should use synthetic data only
 examples/data/
