@@ -1,8 +1,10 @@
 """Shared synthetic FIT builder for the two strength examples.
 
 Internal to ``examples/``. Used by ``synthetic_strength_baseline.py`` and
-``synthetic_strength_recent.py``. Produces byte-deterministic FIT output
-suitable for `parse_strength_fit`.
+``synthetic_strength_recent.py`` for the quickstart / docs examples, and
+exercised from ``tests/test_parse_strength_fit.py`` (v0.2.1+) as the
+disk-path test fixture for FIT precision-asymmetry regression coverage.
+Produces byte-deterministic FIT output suitable for `parse_strength_fit`.
 
 Synthetic-year invariant: every timestamp inside the encoded FIT must be
 in year 2000. The PII grep guard (``scripts/check-pii.sh``) rejects
@@ -11,6 +13,14 @@ in year 2000. The PII grep guard (``scripts/check-pii.sh``) rejects
 Manufacturer / serial fields use the FIT-spec "development" sentinel
 (manufacturer id 255 / serial 0) so nothing in the output identifies the
 machine that produced it.
+
+FIT precision-asymmetry simulator: ``_to_fit_seconds`` writes
+``set.start_time`` as integer FIT seconds (the ``int(...)`` truncation in
+``_to_fit_seconds``), which is the device behavior we deliberately
+reproduce. Tests that exercise sub-second tolerance pass a non-integer
+``SyntheticSet.duration`` and ``rest_between=0.0`` so the cursor's
+fractional component is preserved across the int-truncation step. See
+``docs/confounders.md`` § 10.
 """
 
 from __future__ import annotations

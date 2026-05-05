@@ -12,12 +12,23 @@ sets and is useless. Cursor-accumulation reconstruction (sum of durations
 from session start) drifts 0.5–3 s and mismatches ``total_elapsed_time`` on
 3/5 verified sessions — do not use it.
 
+Sub-second clamping (v0.2.1): on vivoactive 5 (n=5/5) the parser clamps
+adjacent-set boundary inversions strictly less than 1.0 s, emitting a
+one-shot ``UserWarning`` on the first clamp per session and counting all
+clamps in ``StrengthSession.n_set_boundaries_clamped`` (also surfaced by
+``summary()``). Inversions ``>= 1.0 s`` still raise (real device-side
+timing corruption suspected). Background: ``set.start_time`` is FIT-spec
+second-precision (uint32 epoch seconds) but ``set.duration`` is
+millisecond-precision (uint32 scale=1000); on devices that finish a set
+mid-second the next ``set.start_time`` is truncated by up to 0.999 s. See
+also ``docs/confounders.md`` § 10 and ``docs/methodology.md`` § noise floor.
+
 Usage:
 
     from blackswan.parse_strength_fit import parse_strength_fit
 
     session = parse_strength_fit("path/to/strength.fit")
-    print(session.start_time, len(session.sets))
+    print(session.summary())
 """
 
 from __future__ import annotations
@@ -27,13 +38,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from statistics import mean
-from typing import Literal
+from typing import Final, Literal
 
 from garmin_fit_sdk import Decoder, Stream, convert_timestamp_to_datetime
 
 from blackswan._time import LOCAL_TZ
 
 __all__ = [
+    "INVERSION_TOLERANCE_S",
     "StrengthSet",
     "StrengthSession",
     "parse_strength_fit",
@@ -51,6 +63,30 @@ the parser gives every downstream consumer a canonical value, so weight
 comparisons (greedy bucket matching, ref-set lookup, exercise grouping)
 can stay on plain ``==`` without the float-equality landmine called out in
 CLAUDE.md."""
+
+_FIT_TIMESTAMP_PRECISION_S: Final[float] = 1.0
+"""FIT spec invariant: every ``date_time`` field (``set.start_time``,
+``record.timestamp``, ``session.start_time``, ...) is uint32 epoch seconds
+— second-precision, no fractional component (see FIT SDK Profile.xlsx >
+Types > date_time and Messages > set > duration). Lossy at device write.
+
+DO NOT modify — this is a derivation from the FIT spec, not a tuning
+parameter."""
+
+INVERSION_TOLERANCE_S: Final[float] = _FIT_TIMESTAMP_PRECISION_S
+"""Maximum sub-second inversion between adjacent set boundaries that is
+still consistent with FIT precision-asymmetry (``set.start_time``
+second-precision vs ``set.duration`` millisecond-precision). Strictly
+``<``, never ``<=`` — exactly 1.0s cannot be a truncation artifact.
+Inversions ``>=`` this still raise.
+
+Why 1.0s exactly: a device computing ``t_start_real = X.999s`` and writing
+``truncate(X.999) = X`` loses up to 0.999s. An inversion of 1.0s would
+require losing >=1s, which integer-second truncation cannot do.
+
+Note on float comparison: ``(prev.t_end - t_start).total_seconds()`` is
+bounded by ``timedelta`` microsecond precision (~1e-6 relative roundoff).
+Cannot push a true sub-second inversion to >=1.0s or vice-versa."""
 
 
 @dataclass
@@ -85,6 +121,38 @@ class StrengthSession:
     total_elapsed_time: float
     device_product: str | None
     sets: list[StrengthSet]
+    n_set_boundaries_clamped: int = 0
+    """Count of adjacent-set boundaries clamped to absorb FIT
+    precision-asymmetry sub-second inversions (v0.2.1+). Zero on
+    integer-aligned FITs; ``len(sets) - 1`` is the upper bound. See
+    ``INVERSION_TOLERANCE_S`` and ``docs/confounders.md`` § 10."""
+
+    def summary(self) -> str:
+        """One-line summary suitable for batch-job logs. Distinct from the
+        multi-line ``cc_metrics.ComparisonReport.summary()`` /
+        ``strength_metrics.StrengthComparisonReport.summary()`` report
+        formats (which are cross-session, multi-line).
+
+        When ``n_set_boundaries_clamped > 0`` the clamp count is appended
+        so batch-job readers see FIT-precision asymmetry without parsing
+        the raw counter.
+        """
+        n_active = sum(1 for s in self.sets if s.set_type == "active")
+        n_rest = sum(1 for s in self.sets if s.set_type == "rest")
+        parts = [
+            f"StrengthSession {self.start_time.isoformat()}",
+            f"sport={self.sport}/{self.sub_sport}",
+            f"device={self.device_product}",
+            f"sets={len(self.sets)} ({n_active} active + {n_rest} rest)",
+            f"elapsed={self.total_elapsed_time:.1f}s",
+        ]
+        if self.n_set_boundaries_clamped > 0:
+            total_boundaries = max(0, len(self.sets) - 1)
+            parts.append(
+                f"clamped={self.n_set_boundaries_clamped}/{total_boundaries} "
+                "boundaries (FIT precision-asymmetry)"
+            )
+        return " | ".join(parts)
 
 
 def _to_local(ts) -> datetime:
@@ -195,6 +263,7 @@ def parse_strength_fit_from_msgs(
 
     sets: list[StrengthSet] = []
     active_counter = 0
+    n_clamped = 0
 
     for raw_idx, raw in enumerate(set_mesgs):
         if "start_time" not in raw or raw["start_time"] is None:
@@ -225,14 +294,43 @@ def parse_strength_fit_from_msgs(
         t_end = t_start + timedelta(seconds=duration)
 
         if sets and t_start < sets[-1].t_end:
-            raise ValueError(
-                f"set_mesgs[{raw_idx}] starts at {t_start.isoformat()} which "
-                f"is before previous set ended at {sets[-1].t_end.isoformat()}. "
-                "Cause: the FIT contains overlapping set windows, indicating "
-                "corrupted timing or a device bug. "
-                "Fix: re-export the activity from Garmin Connect; if the "
-                "issue persists, file an issue with a synthetic reproducer."
-            )
+            inversion = (sets[-1].t_end - t_start).total_seconds()
+            if inversion < INVERSION_TOLERANCE_S:
+                # FIT precision-asymmetry artifact: clamp t_start to previous
+                # t_end and recompute t_end so the t_end == t_start + duration
+                # invariant (P5) survives. NB: clamp must happen BEFORE the HR
+                # window query below — otherwise records in the lost sub-second
+                # slice would be assigned to this set's hr_avg instead of the
+                # previous set's hr_next60s_avg window.
+                t_start = sets[-1].t_end
+                t_end = t_start + timedelta(seconds=duration)
+                if n_clamped == 0:
+                    warnings.warn(
+                        f"FIT precision-asymmetry detected at set_mesgs[{raw_idx}] "
+                        f"(inversion {inversion:.4f}s). Subsequent clamps silent; "
+                        "see StrengthSession.n_set_boundaries_clamped for total. "
+                        "Background: confounders.md § 10.",
+                        stacklevel=2,
+                    )
+                n_clamped += 1
+            else:
+                raise ValueError(
+                    f"set_mesgs[{raw_idx}] starts at {t_start.isoformat()} which is "
+                    f"before previous set ended at {sets[-1].t_end.isoformat()} "
+                    f"by {inversion:.4f}s, exceeding FIT-precision tolerance of "
+                    f"{INVERSION_TOLERANCE_S}s. "
+                    "Cause: device emitted overlapping set windows. "
+                    "If 1.0 <= inversion < 1.5s, this is the gray zone where "
+                    "the real-overlap assumption is fragile (see "
+                    "confounders.md § 10). If inversion >= 1.5s, the device "
+                    "emitted genuinely overlapping windows, indicating real "
+                    "corrupted timing or a firmware bug (NOT sub-second "
+                    "truncation). "
+                    "Fix: re-exporting from Garmin Connect WILL NOT help "
+                    "(truncation happens at device write, not Connect transcode). "
+                    "If inversion is in the gray zone, please file an issue with "
+                    "the synthetic reproducer + raw FIT inversion magnitude."
+                )
 
         active_idx = None
         if set_type == "active":
@@ -285,6 +383,7 @@ def parse_strength_fit_from_msgs(
         total_elapsed_time=total_elapsed_time,
         device_product=device_product,
         sets=sets,
+        n_set_boundaries_clamped=n_clamped,
     )
 
 

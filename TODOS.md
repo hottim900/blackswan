@@ -43,3 +43,105 @@ the docstring + tests.
 **Context:** see V2 plan Choice 2 (auto-decided) at
 `~/.gstack/projects/hottim900-blackswan/tim-main-design-20260503-024306.md`,
 and the multi-agent verification log on PR #2.
+
+## v0.2.1 deferred items
+
+Captured by /autoplan during the v0.2.1 FIT precision-asymmetry patch. Each
+entry names the deferral reason and the trigger that should make us revisit.
+
+### `blackswan inspect-strength <path>` CLI subcommand
+
+**Where:** new entry point in `pyproject.toml` `[project.scripts]` table; new
+module `src/blackswan/inspect_cli.py`.
+
+**What:** one-shot diagnostic CLI: `blackswan inspect-strength foo.fit` prints
+session metadata, per-set boundaries, `n_set_boundaries_clamped`, max
+inversion magnitude. Lets users debug their own FITs without writing a
+script.
+
+**Why deferred:** outside v0.2.1 blast radius (new public surface, new tests,
+new docs). DX-9 in the v0.2.1 design plan.
+
+**When to revisit:** v0.3, or first user issue asking "how do I see what the
+parser does on my FIT?".
+
+### `inversion_tolerance_s` per-call kwarg on `parse_strength_fit`
+
+**What:** allow callers to pass a custom tolerance instead of the
+module-level `INVERSION_TOLERANCE_S = 1.0`. Currently `Final` and not
+monkeypatchable.
+
+**Why deferred:** TASTE-DX-2 in the v0.2.1 plan. The 1.0 s constant is a
+FIT-spec derivation, not a tunable; exposing a knob invites users to mask
+real corruption with a relaxed tolerance. Defer until power users surface
+a concrete need.
+
+**When to revisit:** first user issue asking for a per-call tolerance with
+a credible non-debug reason.
+
+### `clamp_inversions: list[float]` per-clamp magnitudes on `StrengthSession`
+
+**What:** store the inversion magnitude of each clamp (not just the count)
+so users can debug FIT precision-asymmetry distributions per session.
+
+**Why deferred:** TASTE-DX-3. The audit counter `n_set_boundaries_clamped`
+is enough for the v0.2.1 use case (skip-loop callers + summary). Storing
+per-clamp values doubles the audit surface for marginal benefit.
+
+**When to revisit:** v0.3 if users report needing the distribution for
+their own debugging without re-running the parser-equivalent inversion
+extraction.
+
+### Cross-cutting `FitTimestamp` precision schema in `_time.py`
+
+**Where:** `src/blackswan/_time.py`.
+
+**What:** a typed wrapper that encodes "this datetime came from a FIT
+field with precision X" so the v0.2.1 patch's local fix in
+`parse_strength_fit.py` becomes a project-wide pattern. Other parsers
+(cardio, sleep, daily) gain the same protection without copy-paste.
+
+**Why deferred:** C-wide in the v0.2.1 plan. Out of scope for a
+strength-only PATCH. The local fix works; cross-cutting can wait until a
+second module hits the same trap.
+
+**When to revisit:** when a second parser surfaces a similar
+precision-asymmetry bug, OR when Garmin SDK profile adds fractional
+duration to `lap_mesgs` / similar.
+
+### Upstream PR to garmin_fit_sdk
+
+**What:** after a 30-min read of golden-cheetah's `set_mesgs` handling,
+file an upstream PR that documents the FIT-spec precision-asymmetry trap
+and exposes a helper for downstream parsers.
+
+**Why deferred:** EXP-9 in the v0.2.1 plan. Low priority; v0.2.1's local
+fix already serves blackswan users. Upstream contribution is a
+nice-to-have.
+
+**When to revisit:** when blackswan PRs are caught up and a quiet week
+allows the SDK reading.
+
+### Issue #1 close commit + comment
+
+**What:** issue #1 references the v0.2.0 ship state. After v0.2.1 ships,
+post a comment summarising the patch and close.
+
+**Why deferred:** EXP-8. Housekeeping, separate from the patch itself
+(D1 design choice C kept admin work isolated).
+
+**When to revisit:** immediately after v0.2.1 tag.
+
+### 6-month regret hedge
+
+**What:** if v0.2.1's clamping behaviour produces a systematic bias that
+only surfaces in cross-session comparison after several months of data,
+revisit the 1.0 s threshold + clamp-recompute strategy.
+
+**Why deferred:** C-8 in the v0.2.1 plan. P3b real-overlap-floor
+assumption was confirmed empirically on n=5 (max 774 ms, no `[0.95, 1.0)`
+hits) so the immediate risk is low.
+
+**When to revisit:** 2026-11 (six months post-tag), or first session that
+shows `n_set_boundaries_clamped` distribution with a long tail near
+0.99 s.

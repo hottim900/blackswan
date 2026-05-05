@@ -7,17 +7,33 @@ idempotency, and Decoder option pinning per V2 test plan addendum.
 from __future__ import annotations
 
 import copy
+import dataclasses
+import warnings
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from blackswan.parse_strength_fit import (
+    INVERSION_TOLERANCE_S,
     StrengthSession,
     parse_strength_fit,
     parse_strength_fit_from_msgs,
 )
-from tests._strength_helpers import build_strength_msgs
+from tests._strength_helpers import SYNTH_START, build_strength_msgs
+
+
+def _build_strength_session(tmp_path: Path, sets: list, filename: str) -> StrengthSession:
+    """Build a synthetic strength FIT, write to ``tmp_path``, parse via the
+    full disk path. ``rest_between=0.0`` is hard-coded because every v0.2.1
+    precision-asymmetry test needs the cursor's fractional component
+    preserved across the device-truncation step (see ``examples/_strength_fit_synth``)."""
+    from examples._strength_fit_synth import build_strength_fit_bytes
+
+    fit = build_strength_fit_bytes(sets=sets, start_time=SYNTH_START, rest_between=0.0)
+    fit_path = tmp_path / filename
+    fit_path.write_bytes(fit)
+    return parse_strength_fit(fit_path)
 
 
 # T-PARSE-10: wrong sport raises with problem+cause+fix triplet
@@ -244,3 +260,258 @@ def test_session_end_equals_start_plus_total_elapsed():
     last_set_end = sess.sets[-1].t_end
     # last set ends at session end (no trailing rest by helper convention)
     assert last_set_end <= expected_end
+
+
+# v0.2.1 — FIT precision-asymmetry tolerance regression suite
+# See docs/confounders.md § 10 and the design plan for hand-derived expected values.
+
+
+# T-1: sub-second tolerance, single boundary, full Encoder→Decoder→parser disk path.
+def test_disk_path_tolerates_subsecond_truncation(tmp_path: Path):
+    from examples._strength_fit_synth import SyntheticSet
+
+    with pytest.warns(UserWarning, match=r"FIT precision-asymmetry"):
+        sess = _build_strength_session(
+            tmp_path,
+            sets=[
+                SyntheticSet(weight=60.0, reps=8, set_type="active", duration=3.298),
+                SyntheticSet(weight=None, reps=None, set_type="rest", duration=30.0),
+            ],
+            filename="subsecond.fit",
+        )
+
+    assert sess.n_set_boundaries_clamped == 1
+    assert sess.sets[0].t_end == sess.sets[1].t_start
+    duration_after_clamp = (sess.sets[1].t_end - sess.sets[1].t_start).total_seconds()
+    assert duration_after_clamp == 30.0
+    assert sess.sets[0].duration == 3.298
+
+
+# T-1b: integer-aligned back-to-back boundary does NOT clamp (noise floor = 0).
+def test_back_to_back_integer_boundary_does_not_clamp(tmp_path: Path):
+    from examples._strength_fit_synth import SyntheticSet
+
+    sess = _build_strength_session(
+        tmp_path,
+        sets=[
+            SyntheticSet(weight=60.0, reps=8, set_type="active", duration=10.0),
+            SyntheticSet(weight=60.0, reps=8, set_type="active", duration=10.0),
+        ],
+        filename="integer.fit",
+    )
+
+    assert sess.n_set_boundaries_clamped == 0
+    assert sess.sets[1].t_start == sess.sets[0].t_end
+
+
+# T-1c: max sub-second inversion (0.999s) clamps.
+def test_max_subsecond_inversion_clamps(tmp_path: Path):
+    from examples._strength_fit_synth import SyntheticSet
+
+    sess = _build_strength_session(
+        tmp_path,
+        sets=[
+            SyntheticSet(weight=60.0, reps=8, set_type="active", duration=0.999),
+            SyntheticSet(weight=60.0, reps=8, set_type="active", duration=10.0),
+        ],
+        filename="max_sub.fit",
+    )
+
+    assert sess.n_set_boundaries_clamped == 1
+    aligned_after = (sess.sets[0].t_end - sess.sets[1].t_start).total_seconds()
+    assert aligned_after == 0.0
+
+
+# T-2: inversion above tolerance raises, error message references the named constant.
+def test_msgs_path_raises_on_overlap_above_tolerance():
+    msgs = build_strength_msgs(
+        weights=[60, 60], reps=[8, 8], rest_between=0.0, set_dur=10.0
+    )
+    set0_start = msgs["set_mesgs"][0]["start_time"]
+    msgs["set_mesgs"][2]["start_time"] = set0_start + timedelta(seconds=8.0)
+
+    with pytest.raises(ValueError) as excinfo:
+        parse_strength_fit_from_msgs(msgs)
+    err = str(excinfo.value)
+    assert f"{INVERSION_TOLERANCE_S}s" in err
+    assert f"{2.0:.4f}s" in err
+    assert "FIT-precision tolerance" in err
+    assert "Cause:" in err and "Fix:" in err
+
+
+# T-2b: inversion of exactly 1.0s raises (strict-less-than gate).
+def test_msgs_path_inversion_at_one_second_exactly_raises():
+    msgs = build_strength_msgs(
+        weights=[60, 60], reps=[8, 8], rest_between=0.0, set_dur=10.0
+    )
+    set0_start = msgs["set_mesgs"][0]["start_time"]
+    msgs["set_mesgs"][2]["start_time"] = set0_start + timedelta(seconds=9.0)
+
+    with pytest.raises(ValueError, match=r"FIT-precision tolerance"):
+        parse_strength_fit_from_msgs(msgs)
+
+
+# T-2c: inversion just below tolerance (0.9999s) clamps (FP edge).
+def test_msgs_path_inversion_just_below_tolerance_clamps():
+    msgs = build_strength_msgs(
+        weights=[60, 60], reps=[8, 8], rest_between=0.0, set_dur=10.0
+    )
+    set0_start = msgs["set_mesgs"][0]["start_time"]
+    msgs["set_mesgs"][2]["start_time"] = set0_start + timedelta(seconds=9.0001)
+
+    sess = parse_strength_fit_from_msgs(msgs)
+    assert sess.n_set_boundaries_clamped == 1
+
+
+# T-3: cascade of sub-second truncations stays monotonic; clamp count locked at 4.
+def test_disk_path_cascade_clamp_remains_monotonic(tmp_path: Path):
+    from examples._strength_fit_synth import SyntheticSet
+
+    sess = _build_strength_session(
+        tmp_path,
+        sets=[
+            SyntheticSet(weight=60.0, reps=8, set_type="active", duration=47.7)
+            for _ in range(5)
+        ],
+        filename="cascade.fit",
+    )
+
+    assert len(sess.sets) == 5
+    assert sess.n_set_boundaries_clamped == 4
+    for i in range(len(sess.sets) - 1):
+        assert sess.sets[i].t_end <= sess.sets[i + 1].t_start
+    assert all(s.duration == 47.7 for s in sess.sets)
+    assert sum(s.duration for s in sess.sets) == 5 * 47.7
+
+
+# Cascade emits exactly one warning across all 4 clamps (one-shot contract).
+def test_cascade_clamp_emits_exactly_one_warning(tmp_path: Path):
+    from examples._strength_fit_synth import SyntheticSet
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        sess = _build_strength_session(
+            tmp_path,
+            sets=[
+                SyntheticSet(weight=60.0, reps=8, set_type="active", duration=47.7)
+                for _ in range(5)
+            ],
+            filename="cascade_warn.fit",
+        )
+
+    asym = [w for w in captured if "FIT precision-asymmetry" in str(w.message)]
+    assert len(asym) == 1, f"expected one-shot warning, got {len(asym)}"
+    assert sess.n_set_boundaries_clamped == 4
+
+
+# T-4: HR window uses CLAMPED t_start/t_end after clamp (silent-corruption guard).
+def test_hr_records_use_clamped_window_after_clamp():
+    T = SYNTH_START
+    msgs = {
+        "session_mesgs": [{
+            "start_time": T,
+            "sport": "training",
+            "sub_sport": "strength_training",
+            "total_elapsed_time": 70.0,
+        }],
+        "set_mesgs": [
+            {
+                "start_time": T,
+                "duration": 2.5,
+                "weight": 60,
+                "repetitions": 8,
+                "set_type": "active",
+                "category": None,
+                "category_subtype": None,
+            },
+            {
+                "start_time": T + timedelta(seconds=2),
+                "duration": 10.0,
+                "weight": 60,
+                "repetitions": 8,
+                "set_type": "active",
+                "category": None,
+                "category_subtype": None,
+            },
+        ],
+        "record_mesgs": [
+            {"timestamp": T + timedelta(seconds=0.0), "heart_rate": 130},
+            {"timestamp": T + timedelta(seconds=1.0), "heart_rate": 130},
+            {"timestamp": T + timedelta(seconds=2.0), "heart_rate": 140},
+            {"timestamp": T + timedelta(seconds=2.5), "heart_rate": 200},
+            {"timestamp": T + timedelta(seconds=5.0), "heart_rate": 200},
+            {"timestamp": T + timedelta(seconds=10.0), "heart_rate": 200},
+            {"timestamp": T + timedelta(seconds=12.5), "heart_rate": 200},
+        ],
+        "device_info_mesgs": [
+            {"source_type": "local", "device_index": 0, "garmin_product": "vivoactive5"},
+        ],
+    }
+
+    sess = parse_strength_fit_from_msgs(msgs)
+
+    assert sess.n_set_boundaries_clamped == 1
+    assert sess.sets[1].hr_avg == 200.0, (
+        f"hr_avg={sess.sets[1].hr_avg} — expected 200 (clamped window). "
+        "If a lower value (~188), the HR query used the pre-clamp t_start "
+        "and pulled in the 140-bpm record at T+2.0s."
+    )
+    assert sess.sets[0].t_end == sess.sets[1].t_start
+
+
+# T-5: dataclass field placed last with default=0 (back-compat with kwargs callers).
+def test_strength_session_field_appended_at_end_with_default():
+    s = StrengthSession(
+        fit_path=None,
+        sport="training",
+        sub_sport="strength_training",
+        start_time=datetime(2000, 1, 15, 18, 30),
+        local_hour=18,
+        total_elapsed_time=0.0,
+        device_product=None,
+        sets=[],
+    )
+    assert s.n_set_boundaries_clamped == 0
+
+    s2 = StrengthSession(
+        fit_path=None,
+        sport="training",
+        sub_sport="strength_training",
+        start_time=datetime(2000, 1, 15, 18, 30),
+        local_hour=18,
+        total_elapsed_time=0.0,
+        device_product=None,
+        sets=[],
+        n_set_boundaries_clamped=5,
+    )
+    assert s2.n_set_boundaries_clamped == 5
+
+    fields = dataclasses.fields(StrengthSession)
+    assert any(
+        f.name == "n_set_boundaries_clamped" and f.default == 0
+        for f in fields
+    ), "n_set_boundaries_clamped must exist with default=0 for kwargs back-compat"
+
+
+# T-6: summary() exists, hides clamp count when 0, surfaces it when non-zero.
+def test_strength_session_summary_reports_clamp_count():
+    base_kwargs = dict(
+        fit_path=None,
+        sport="training",
+        sub_sport="strength_training",
+        start_time=datetime(2000, 1, 15, 18, 30),
+        local_hour=18,
+        total_elapsed_time=0.0,
+        device_product=None,
+        sets=[],
+    )
+    s_no_clamps = StrengthSession(**base_kwargs, n_set_boundaries_clamped=0)
+    s_with_clamps = StrengthSession(**base_kwargs, n_set_boundaries_clamped=13)
+
+    assert hasattr(s_no_clamps, "summary")
+    no_summary = s_no_clamps.summary()
+    with_summary = s_with_clamps.summary()
+
+    assert isinstance(no_summary, str)
+    assert "clamp" not in no_summary.lower()
+    assert "13" in with_summary and "clamp" in with_summary.lower()
