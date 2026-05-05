@@ -302,3 +302,17 @@ Protocol:
 5. **If no ground truth is reachable**, the result is genuinely ambiguous — report both, do not collapse to a single number, and document the irreducible uncertainty.
 
 Averaging discordant results actively hides bugs: the bug stays in the codebase, masked by a "it's probably about right" output. Don't.
+
+## Noise floor: `n_set_boundaries_clamped`
+
+**Metric.** `StrengthSession.n_set_boundaries_clamped` (introduced v0.2.1).
+
+**Ground truth.** Every fractional-duration adjacent-set boundary on a device that truncates `set.start_time` to integer seconds. For a session with `N - 1` adjacent boundaries (between `N` sets) where `K` boundaries are fractional-duration (i.e. `set.duration` is not an integer second), the expected clamp count is `K`.
+
+**Noise floor.** `0`. The counter is incremented only when an actual sub-second clamp occurs; integer-aligned boundaries do not increment it (verified by test `test_back_to_back_integer_boundary_does_not_clamp` in the v0.2.1 test plan).
+
+**Upper bound (FIT-spec derivation).** Every inversion that increments the counter is strictly less than 1.0 s. Integer-second truncation cannot lose `>= 1` s (see `parse_strength_fit.INVERSION_TOLERANCE_S`). An inversion of `>= 1.0 s` raises `ValueError` instead, distinguishing the truncation regime from the device-corruption regime.
+
+**Calibration.** `n=5` vivoactive 5 sessions, single user. The CHANGELOG v0.2.1 "Empirical inversion distribution" sub-bullet records per-session clamp counts and max inversion observed. If across `n>=10` sessions the distribution shows a long tail near 0.99 s, the real-overlap floor assumption is fragile and v0.3 must recalibrate.
+
+**Cross-reference.** `docs/confounders.md` § 10 (the domain confounder catalogue entry); `parse_strength_fit.py` module docstring (conclusion-first version of this entry).

@@ -161,6 +161,31 @@ Single-session mode (no reference) uses absolute thresholds only; comparison mod
 3. If excluding: pass `excluded_indices_recent` / `excluded_indices_baseline` and re-run. Both passes' `pairs[]` are exhaustive; the flag does not pre-filter.
 4. If both sessions show the artifact in similar slots, the deltas at those slots are uninterpretable — do NOT claim "+19 bpm fitness regression" without first ruling artifact out.
 
+### 10. FIT spec precision asymmetry (strength `set.start_time`)
+
+**Scope.** Strength training only (today). Catalogued as a *domain confounder*, not "just a code bug" — the trap recurs anywhere the FIT spec mixes second-precision `date_time` fields with millisecond-precision duration scales, and the fix pattern (clamp + audit counter) generalises.
+
+**Symptom.** `parse_strength_fit` raises `ValueError("...overlapping set windows...")` on every real-device vivoactive 5 strength FIT. Synthetic FITs that use integer-second durations parse cleanly; the bug is invisible until you feed in actual hardware output.
+
+**Root cause.** Two FIT-spec fields cooperate to produce apparent overlap:
+
+- `set.start_time` is `uint32` epoch seconds (FIT SDK Profile.xlsx → Types → `date_time`). The device truncates the real start to integer FIT seconds at write time, losing up to 0.999 s.
+- `set.duration` is `uint32` with `scale=1000` — millisecond precision (FIT SDK Profile.xlsx → Messages → `set` → `duration`).
+
+When a set finishes mid-second (real `t_end = X.4s`), the device writes the next `set.start_time = int(X.4) = X`. The decoded `set[N-1].t_end = set[N-1].t_start_decoded + duration` lands at `X.4`, but `set[N].t_start_decoded = X`, giving a 0.4 s "overlap" that is purely a write-side rounding artifact.
+
+**Generalisation.** `set_mesgs` is the only known mesg type in the current Garmin FIT profile that pairs `date_time` with `scale=1000` duration. If a future SDK adds fractional duration to `lap_mesgs` or similar, the same pattern recurs and a cross-cutting `FitTimestamp` precision schema in `blackswan._time` should absorb the fix uniformly. Tracked as a deferred follow-up.
+
+**Detection (v0.2.1+).** `parse_strength_fit` measures the inversion magnitude `(prev.t_end - t_start).total_seconds()`. Inversions strictly less than 1.0 s are clamped (`t_start := prev.t_end`, recompute `t_end`); inversions `>= 1.0 s` raise. The clamp count is exposed via `StrengthSession.n_set_boundaries_clamped` and `summary()`. A one-shot `UserWarning` is emitted on the first clamp per session so `try/except ValueError: skip` callers migrating from v0.2.0 still see a signal in their logs.
+
+**Why 1.0 s is a derivation, not a tunable.** Integer-second truncation cannot lose `>=1` s by definition. An inversion of 1.0 s or more is incompatible with the truncation hypothesis and indicates real device-side timing corruption (firmware bug, FIT byte stream rewrite, SDK bug). Calling the threshold "tolerance" is shorthand; the underlying constant is a FIT-spec invariant. See `parse_strength_fit.INVERSION_TOLERANCE_S`.
+
+**Gray zone.** Inversions in `[1.0, 1.5) s` are physically inconsistent with single-set truncation but could plausibly arise from accumulated rounding across cascaded sets. v0.2.1 raises in this range to surface the case loudly; if real-world data shows the gray zone is populated, v0.3 may recalibrate. The CHANGELOG "Empirical inversion distribution" sub-bullet records the observed distribution to feed that decision.
+
+**Fix from a user's perspective.** Re-exporting from Garmin Connect does **not** help — the truncation happens at device write, not at Connect transcode. If you hit the `>=1.0 s` raise, file an issue with the synthetic reproducer + raw FIT inversion magnitude.
+
+**Cross-reference.** `parse_strength_fit.INVERSION_TOLERANCE_S` (the public constant), `docs/methodology.md` § noise floor (the metric's noise-floor protocol entry), `parse_strength_fit.py` module docstring (conclusion-first version of this entry).
+
 ## Composite correction example
 
 From a real comparison:
