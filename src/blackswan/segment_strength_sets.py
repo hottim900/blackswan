@@ -53,10 +53,16 @@ class ExerciseGroup:
 def _group_name(weight: float | None, reps: int | None, is_first_group: bool) -> str:
     """Derive a human-readable name for a group given its ``(weight, reps)``.
 
+    - ``reps=0`` (any weight) → "zero_reps" (recorded intent without work
+      performed: failed attempt or accidental button press; takes priority
+      over weight-based labels so a `(60kg, 0)` failed attempt doesn't read
+      as ``"60.0kg × 0"``)
     - ``weight=None`` or (``weight=0`` AND ``reps>=10`` AND first group) → "warmup"
     - ``weight=0`` and ``reps>0`` (not warmup) → "bodyweight"
-    - ``weight>0`` → ``f"{weight}kg × {reps}"``
+    - ``weight>0`` and ``reps>0`` → ``f"{weight}kg × {reps}"``
     """
+    if reps == 0:
+        return "zero_reps"
     if weight is None:
         return "warmup"
     if weight == 0:

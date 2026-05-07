@@ -240,3 +240,104 @@ def test_artifact_signatures_present_on_report():
     report = compare_strength_sessions_from_stats(stats(sess), stats(sess))
     assert isinstance(report.baseline_artifact_signature, StrengthHRArtifactSignature)
     assert isinstance(report.recent_artifact_signature, StrengthHRArtifactSignature)
+
+
+# Issue #5 — ghost (reps=0) filter at stats build + downstream surfacing.
+# T1: filter drops zero-reps active sets and increments the counter.
+def test_zero_reps_filtered_from_active_set_stats():
+    """Synthetic session with [60kg×8, 0kg×0, 60kg×8] yields 2 active stats
+    (not 3), with the (0, 0) ghost dropped + n_zero_reps_dropped == 1."""
+    sess = build_session(
+        active_pattern=[(60, 8), (0, 0), (60, 8)],
+        hrs=[130.0, 136.0, 132.0],
+    )
+    s = stats(sess)
+    assert len(s.active_set_stats) == 2
+    assert s.n_zero_reps_dropped == 1
+    # Raw session.sets retains the ghost — only the stats layer drops it.
+    raw_active = [x for x in sess.sets if x.set_type == "active"]
+    assert len(raw_active) == 3
+
+
+# T2: ghosts never pair via exact-slot or exercise-level fallback.
+def test_zero_reps_does_not_match_via_exact_or_exercise_level():
+    """With ghosts on both sides, the (0, 0) slot must not appear in pairs
+    or unmatched_baseline (it was dropped pre-pairing). This pins the
+    issue #5 regression — previously (0, 0) leaked into unmatched_baseline."""
+    baseline = build_session(
+        active_pattern=[(60, 8), (0, 0), (60, 8)],
+        hrs=[130.0, 136.0, 132.0],
+    )
+    recent = build_session(
+        active_pattern=[(60, 8), (60, 8)],
+        hrs=[125.0, 128.0],
+    )
+    report = compare_strength_sessions_from_stats(stats(baseline), stats(recent))
+    for p in report.pairs:
+        assert (p.baseline.weight, p.baseline.reps) != (0.0, 0)
+        assert (p.recent.weight, p.recent.reps) != (0.0, 0)
+    for s in report.unmatched_baseline:
+        assert (s.weight, s.reps) != (0.0, 0)
+    for s in report.unmatched_recent:
+        assert (s.weight, s.reps) != (0.0, 0)
+
+
+# T5: 0-pairs raise message includes drop count when filter empties a side.
+def test_zero_reps_drop_count_in_zero_pairs_raise_message():
+    """If filter drains a side so 0 pairs result, the raise message must
+    breadcrumb the drop count so users know zero-reps caused it."""
+    baseline = build_session(active_pattern=[(0, 0)], hrs=[136.0])
+    recent = build_session(active_pattern=[(60, 8)], hrs=[130.0])
+    with pytest.raises(ValueError, match=r"dropped 1 zero-reps.*from baseline"):
+        compare_strength_sessions_from_stats(stats(baseline), stats(recent))
+
+
+# T6: stored ghost-targeting indices in excluded_indices_* now raise (V2.12).
+def test_excluded_indices_ghost_active_idx_now_raises():
+    """Behavior change: a stored exclusion targeting a ghost active_idx now
+    fails the V2.12 anti-shopping guard because the ghost is filtered before
+    pairing. Users must drop ghost indices from stored exclusion sets after
+    upgrading."""
+    sess = build_session(
+        active_pattern=[(60, 8), (0, 0), (60, 8)],
+        hrs=[130.0, 136.0, 132.0],
+    )
+    with pytest.raises(ValueError, match=r"excluded_indices.*1.*not found"):
+        compare_strength_sessions_from_stats(
+            stats(sess), stats(sess),
+            excluded_indices_baseline={1},
+        )
+
+
+# T7: warmup_avg_hr invariant — zero-reps groups never feed warmup HR.
+def test_warmup_avg_hr_excludes_zero_reps_groups():
+    """If the first group is now labelled "zero_reps" (was "bodyweight"
+    before this fix), warmup_avg_hr must remain None — no leakage from
+    failed-attempt HR into the warmup baseline. Pins P5 invariant."""
+    sess = build_session(
+        active_pattern=[(0, 0), (60, 8), (60, 8)],
+        hrs=[150.0, 130.0, 132.0],
+    )
+    s = stats(sess)
+    # warmup HR must be None (no warmup group), not 150 from the ghost.
+    assert s.warmup_avg_hr is None
+
+
+# T8: per-side notes wording — emit only when side has drops.
+def test_zero_reps_notes_per_side_wording():
+    """Notes emit one line per side that had drops; sides with zero drops
+    stay silent (mirrors bucket_exhausted style)."""
+    baseline = build_session(
+        active_pattern=[(60, 8), (0, 0), (60, 8), (60, 8)],
+        hrs=[130.0, 136.0, 131.0, 132.0],
+    )
+    recent = build_session(
+        active_pattern=[(60, 8), (60, 8)],
+        hrs=[125.0, 128.0],
+    )
+    report = compare_strength_sessions_from_stats(stats(baseline), stats(recent))
+    baseline_notes = [n for n in report.notes if "zero-reps" in n and "baseline" in n]
+    recent_notes = [n for n in report.notes if "zero-reps" in n and "recent" in n]
+    assert len(baseline_notes) == 1
+    assert "1 zero-reps" in baseline_notes[0]
+    assert len(recent_notes) == 0  # recent had no drops → no line

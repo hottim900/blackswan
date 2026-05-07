@@ -79,7 +79,16 @@ DEFAULT_DETECTOR_CONFIG = StrengthDetectorConfig()
 
 
 def _active_sets(session: StrengthSession) -> list[StrengthSet]:
-    return [s for s in session.sets if s.set_type == "active"]
+    """Active sets the detector treats as real exercises.
+
+    Excludes ``reps == 0`` ghost sets (recorded intent without work
+    performed): a sitting button-press at low HR is not an exercise and
+    must not feed the early-deficit window — otherwise two ghosts at the
+    start of a session can false-trigger ``EARLY_DEFICIT_LATE_NORMAL``.
+    Sets with ``reps is None`` remain included (raw schema fidelity, no
+    semantic decision encoded yet).
+    """
+    return [s for s in session.sets if s.set_type == "active" and s.reps != 0]
 
 
 def _ref_lookup(reference: StrengthSession | None, target: StrengthSet) -> float | None:

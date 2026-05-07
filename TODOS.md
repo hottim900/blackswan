@@ -145,3 +145,66 @@ hits) so the immediate risk is low.
 **When to revisit:** 2026-11 (six months post-tag), or first session that
 shows `n_set_boundaries_clamped` distribution with a long tail near
 0.99 s.
+
+## Issue #5 (zero-reps ghost filter) deferred items
+
+Captured by /autoplan during the issue-#5 patch (CHANGELOG `[Unreleased]`).
+Each entry names the deferral reason and the trigger that should make us
+revisit.
+
+### Parser-side `(reps=0)` coercion
+
+**Where:** `src/blackswan/parse_strength_fit.py:366` (`raw.get("repetitions")`).
+
+**What:** coerce `repetitions=0` to `None` at the parser instead of
+preserving the FIT-faithful `reps=0` and filtering downstream. Mirrors the
+v0.2.1 `n_set_boundaries_clamped` "clamp at write-asymmetry" precedent.
+
+**Why deferred:** the v0.2.1 clamp is precision-correction (write-asymmetry
+artifact), not semantic drop of valid FIT data — categories distinct.
+`(reps=0)` is semantically valid FIT (recorded intent), so parser-side
+coercion would conflate concerns and lose information that may be useful
+for future failed-attempt analyses.
+
+**When to revisit:** if `reps=0` observably has no consumer in the
+codebase by v0.3, OR if a second device emits `(0, 0)` differently and
+convergence becomes worth the schema-fidelity tradeoff.
+
+### `include_zero_reps: bool` kwarg on `_build_session_stats`
+
+**What:** allow callers to opt out of the new zero-reps filter (retain
+ghosts in `active_set_stats`). Mirrors the deferred
+`inversion_tolerance_s` knob pattern.
+
+**Why deferred:** single-user library today; no consumer has asked. The
+filter is a baseline-definition decision (Layer 2), and exposing a knob
+invites the same exclusion-shopping risk that CLAUDE.md warns against.
+
+**When to revisit:** first user request for ghost retention with a
+credible non-debug reason.
+
+### Public `n_zero_reps_dropped_baseline` / `_recent` on `StrengthComparisonReport`
+
+**What:** expose the per-side drop counts as structured fields on the
+public report, alongside `n_pairs` etc.
+
+**Why deferred:** today's notes-string + internal
+`StrengthSessionStats.n_zero_reps_dropped` field is sufficient. Consistent
+with the existing `bucket_exhausted_count` notes-only pattern. Adding 2
+public fields per-side (4 total) is API surface expansion.
+
+**When to revisit:** first programmatic consumer that needs structured
+drop-count access (e.g. CI dashboard, batch report aggregator).
+
+### Naming review for the `"zero_reps"` group token
+
+**What:** revisit whether `"zero_reps"` is the right label, or whether a
+richer ghost taxonomy is needed (`failed_attempt`, `ghost`, `partial_rep`,
+`recovered_artifact`).
+
+**Why deferred:** single device, single user — no evidence that
+disambiguation matters yet. Today's flat `"zero_reps"` is honest and
+caller-discoverable.
+
+**When to revisit:** when multi-device data lands and ghost-emission
+patterns diverge across vendors.

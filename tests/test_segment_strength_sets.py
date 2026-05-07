@@ -116,3 +116,26 @@ def test_exercise_group_dataclass_field_order():
     g = ExerciseGroup(name="test", sets=[])
     assert g.name == "test"
     assert g.sets == []
+
+
+# Issue #5 — _group_name guard for reps=0 (any weight).
+# T3: bare bodyweight ghost (0, 0) labels as "zero_reps", not "bodyweight".
+def test_zero_reps_set_labels_as_zero_reps_not_bodyweight():
+    """A `(weight=0, reps=0)` mid-session set previously fell through to
+    "bodyweight" via the warmup-gate path. After issue #5 it must label
+    as "zero_reps" — recorded intent without work performed."""
+    sess = build_session(active_pattern=[(60, 8), (0, 0)], hrs=[130.0, 136.0])
+    groups = identify_exercises(sess)
+    assert groups[0].name == "60.0kg × 8"
+    assert groups[1].name == "zero_reps"
+
+
+# T4: weighted ghost (60kg, 0) labels as "zero_reps" too — broader guard.
+def test_zero_reps_with_nonzero_weight_labels_as_zero_reps():
+    """A failed weighted attempt `(weight>0, reps=0)` previously emitted the
+    misleading label "60.0kg × 0". Broader guard makes this consistent with
+    the (0, 0) case — both are zero_reps."""
+    sess = build_session(active_pattern=[(60, 8), (60, 0)], hrs=[130.0, 138.0])
+    groups = identify_exercises(sess)
+    assert groups[0].name == "60.0kg × 8"
+    assert groups[1].name == "zero_reps"

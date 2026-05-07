@@ -64,8 +64,15 @@ docs/confounders.md § 9 — calibration confound caveat."""
 
 @dataclass
 class StrengthSetStats:
-    """Per-set summary used for cross-session pairing. Built only for
-    active sets with ``hr_avg`` and ``(weight, reps)`` all set."""
+    """Per-set summary used for cross-session pairing.
+
+    Built only for active sets with ``hr_avg``, ``weight``, and ``reps > 0``.
+    Sets with ``reps == 0`` represent recorded intent without work performed
+    (failed attempt, accidental button press) and are dropped from
+    comparison stats; the raw ``StrengthSet`` remains in
+    ``StrengthSession.sets`` for any future failed-attempt analysis. The
+    drop count surfaces on ``StrengthSessionStats.n_zero_reps_dropped``.
+    """
 
     active_idx: int
     weight: float
@@ -86,7 +93,11 @@ class StrengthSessionStats:
     to run the artifact detector. The ``artifact_signature`` lives on
     ``StrengthComparisonReport`` (per UC#5), not here, because v1 detector
     is most informative when given a reference session for relative
-    thresholds."""
+    thresholds.
+
+    ``n_zero_reps_dropped`` counts active sets dropped during stats build
+    because ``reps == 0`` (recorded intent without work performed).
+    """
 
     fit_path: Path | None
     start_time: datetime
@@ -95,6 +106,7 @@ class StrengthSessionStats:
     warmup_avg_hr: float | None
     active_set_stats: list[StrengthSetStats]
     source_session: StrengthSession
+    n_zero_reps_dropped: int = 0
 
 
 @dataclass
@@ -220,12 +232,19 @@ def _build_session_stats(
 ) -> StrengthSessionStats:
     """Assemble ``StrengthSessionStats`` from a parsed session + grouped
     exercises. Drops active sets that lack any of ``hr_avg``, ``weight``,
-    or ``reps`` — pairing requires all three."""
+    or ``reps`` — pairing requires all three. Also drops active sets with
+    ``reps == 0`` (recorded intent without work performed); the count is
+    surfaced on the returned ``StrengthSessionStats.n_zero_reps_dropped``
+    for downstream notes and error messages."""
     active_set_stats: list[StrengthSetStats] = []
+    n_zero_reps_dropped = 0
     for s in session.sets:
         if s.set_type != "active":
             continue
         if s.active_idx is None or s.hr_avg is None or s.weight is None or s.reps is None:
+            continue
+        if s.reps == 0:
+            n_zero_reps_dropped += 1
             continue
         # parser guarantees hr_max/hr_start/hr_end are set together with hr_avg
         active_set_stats.append(
@@ -257,6 +276,7 @@ def _build_session_stats(
         warmup_avg_hr=warmup_avg_hr,
         active_set_stats=active_set_stats,
         source_session=session,
+        n_zero_reps_dropped=n_zero_reps_dropped,
     )
 
 
@@ -403,6 +423,14 @@ def compare_strength_sessions_from_stats(
 
     n_pairs = len(pairs)
     if n_pairs == 0:
+        zero_reps_msg = ""
+        if baseline_stats.n_zero_reps_dropped or recent_stats.n_zero_reps_dropped:
+            zero_reps_msg = (
+                f" Note: dropped {baseline_stats.n_zero_reps_dropped} "
+                f"zero-reps active set(s) from baseline / "
+                f"{recent_stats.n_zero_reps_dropped} from recent before "
+                "pairing — this may have caused the empty match."
+            )
         raise ValueError(
             "0 set pairs after matching. "
             "Cause: baseline and recent have no shared (weight, reps) slots, "
@@ -412,6 +440,7 @@ def compare_strength_sessions_from_stats(
             "(len(active_set_stats) > 0 each); if routines are genuinely "
             "disjoint, comparison is not meaningful. "
             "Note: this also fires when both sides have no HR records at all."
+            + zero_reps_msg
         )
 
     deltas = [p.hr_delta for p in pairs]
@@ -496,6 +525,16 @@ def compare_strength_sessions_from_stats(
             "earlier greedy picks. Globally-closest bipartite matching would "
             "recover these — deferred, see TODOS.md."
         )
+
+    for side_name, n_dropped in (
+        ("baseline", baseline_stats.n_zero_reps_dropped),
+        ("recent", recent_stats.n_zero_reps_dropped),
+    ):
+        if n_dropped:
+            notes.append(
+                f"dropped {n_dropped} zero-reps active set(s) from "
+                f"{side_name} (recorded intent without work performed)."
+            )
 
     return StrengthComparisonReport(
         baseline=baseline_stats,
