@@ -98,3 +98,16 @@ def test_detect_relative_threshold_with_reference():
     )
     sig, _ = detect_strength_hr_artifact(recent, reference=baseline)
     assert sig is StrengthHRArtifactSignature.EARLY_DEFICIT_LATE_NORMAL
+
+
+# Issue #5 — ghost (reps=0) sets must not feed early-deficit window.
+def test_detect_zero_reps_ghosts_do_not_feed_early_deficit_window():
+    """Two early-session ghost button-presses with sitting HR (~80 bpm)
+    must NOT false-trigger EARLY_DEFICIT_LATE_NORMAL. The detector only
+    sees real exercises (reps > 0 or reps None), not failed-attempt ghosts."""
+    sess = build_session(
+        active_pattern=[(0, 0), (0, 0), (60, 8), (60, 8), (60, 8), (60, 8)],
+        hrs=[80, 82, 95, 130, 130, 120],
+    )
+    sig, _ = detect_strength_hr_artifact(sess)
+    assert sig is StrengthHRArtifactSignature.CLEAN
