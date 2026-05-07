@@ -4,6 +4,69 @@ All notable changes to this project will be documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-05-07
+
+### Fixed
+- **Ghost (`reps=0`) active sets no longer pollute strength comparison
+  output (issue #5).** vivoactive 5 emits `set_type='active'` rows with
+  `weight=0, reps=0` (or `weight>0, reps=0`) when the user presses the
+  set button but performs zero reps (failed pull-up attempt, accidental
+  press). Previously these leaked into
+  `StrengthComparisonReport.unmatched_baseline`, polluting match-rate
+  denominators and surfacing as user-actionable mismatches that aren't
+  real exercises. Now:
+  - `_build_session_stats` drops `reps == 0` active sets after the
+    existing `is None` filter and tracks the count on
+    `StrengthSessionStats.n_zero_reps_dropped` (new internal field).
+  - `compare_strength_sessions_from_stats` emits a per-side `notes` line
+    when either side dropped any zero-reps sets (mirrors
+    `bucket_exhausted` style — only emitted for the side(s) with drops).
+  - The 0-pairs `ValueError` raise message now appends a "dropped N
+    zero-reps from baseline / M from recent" note so users know the
+    filter caused the empty match.
+  - `segment_strength_sets._group_name` returns `"zero_reps"` for any
+    `(weight, reps=0)` (broader guard, including `weight>0` failed
+    weighted attempts that previously read as `"60.0kg × 0"`).
+  - `detect_strength_hr_artifact` ignores ghost sets in its early-deficit
+    window: two early-session button-presses at sitting HR (~80 bpm)
+    previously could false-trigger `EARLY_DEFICIT_LATE_NORMAL` because
+    the detector walked raw `session.sets` filtered only on
+    `set_type=='active'`. The detector now also requires `reps != 0`.
+  - The raw `StrengthSet` is retained in `StrengthSession.sets` for any
+    future failed-attempt analysis — only the comparison-stats layer
+    and the artifact detector drop them.
+
+### Behavior change
+- **`excluded_indices_baseline` / `excluded_indices_recent` now raise
+  `ValueError` for stored indices that targeted ghost active sets.** The
+  V2.12 anti-shopping guard validates that every index appears in
+  `active_set_stats`; ghost sets are now filtered out, so a previously
+  stored `{ghost_active_idx}` exclusion fails the guard. Fix: drop ghost
+  active_idx values from stored exclusion sets after upgrading
+  (`print stats.active_set_stats[*].active_idx` shows the post-filter
+  set of valid indices).
+
+### Added
+- `StrengthSessionStats.n_zero_reps_dropped: int = 0` — count of active
+  sets dropped during stats build because `reps == 0` (recorded intent
+  without work performed). Internal accounting; not part of the public
+  `StrengthComparisonReport` surface (revisit if a programmatic consumer
+  asks).
+- `"zero_reps"` returnable group name in `segment_strength_sets._group_name`
+  alongside existing `"warmup"`, `"bodyweight"`, and `"{weight}kg × {reps}"`
+  values.
+- 8 regression tests pinning the new behavior across stats build,
+  segmenter labelling, comparison pairing, notes wording, 0-pairs raise
+  message, warmup invariant, and the `excluded_indices_*` behavior
+  change.
+
+### Empirical noise-floor update (informational)
+- One additional vivoactive 5 archive shows `n_set_boundaries_clamped`
+  ratio 24/25 ≈ 96 %, exceeding the v0.2.1 release notes' n=5 maximum of
+  39/45 ≈ 87 %. Maximum inversion in this archive remains well below
+  1.0 s, so the `INVERSION_TOLERANCE_S` floor assumption is intact. No
+  behavior change. See `docs/methodology.md` § noise floor.
+
 ## [0.2.1] - 2026-05-05
 
 ### Fixed

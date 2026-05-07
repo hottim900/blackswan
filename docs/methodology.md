@@ -315,4 +315,6 @@ Averaging discordant results actively hides bugs: the bug stays in the codebase,
 
 **Calibration.** `n=5` vivoactive 5 sessions, single user. The CHANGELOG v0.2.1 "Empirical inversion distribution" sub-bullet records per-session clamp counts and max inversion observed. If across `n>=10` sessions the distribution shows a long tail near 0.99 s, the real-overlap floor assumption is fragile and v0.3 must recalibrate.
 
+**Post-v0.2.1 datapoint.** One additional vivoactive 5 archive (single user, captured during issue #5 investigation) shows clamp ratio `24/25 ≈ 96 %`, exceeding the v0.2.1 pre-merge `n=5` maximum of `39/45 ≈ 87 %`. Maximum inversion in this archive remains well below 1.0 s, so the `INVERSION_TOLERANCE_S` floor assumption stays intact. No behavior change is triggered — the higher ratio expands the clamp-prevalence range we expect to see in the wild but does not invalidate the upper bound. v0.3 recalibration trigger (`n >= 10` with long tail near 0.99 s) is not yet hit.
+
 **Cross-reference.** `docs/confounders.md` § 10 (the domain confounder catalogue entry); `parse_strength_fit.py` module docstring (conclusion-first version of this entry).
