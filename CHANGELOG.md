@@ -55,10 +55,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `"zero_reps"` returnable group name in `segment_strength_sets._group_name`
   alongside existing `"warmup"`, `"bodyweight"`, and `"{weight}kg × {reps}"`
   values.
-- 8 regression tests pinning the new behavior across stats build,
+- 9 regression tests pinning the new behavior across stats build,
   segmenter labelling, comparison pairing, notes wording, 0-pairs raise
-  message, warmup invariant, and the `excluded_indices_*` behavior
-  change.
+  message, warmup invariant, the `excluded_indices_*` behavior change,
+  and the artifact detector early-deficit window.
 
 ### Empirical noise-floor update (informational)
 - One additional vivoactive 5 archive shows `n_set_boundaries_clamped`
