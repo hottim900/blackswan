@@ -4,6 +4,78 @@ All notable changes to this project will be documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-05-10
+
+### Added
+- **`build_daily_summary` — single-row per-day aggregate (closes #7).**
+  Mirrors Garmin Connect's web-export semantics: HR avg + n_readings,
+  resting HR, SpO2 avg/min/max, respiration avg/min/max + sleep/awake
+  split using the sleep-assessment session window, HRV passthrough,
+  sleep stage durations from `sleep-official.csv`, body battery
+  charged/drained from the bulk export.
+  - **`sleep-official.csv` is REQUIRED for stage durations** — missing
+    date row raises `MissingSSOTError` with a remediation pointer to
+    `build_sleep_official`. Pass `--allow-missing-sleep-official` to
+    downgrade to partial mode and emit empty stage columns. Naive
+    transition math on `sleep-levels.csv` is NOT a fallback.
+  - `data_completeness` column reports `"full"` or `"partial"` so
+    downstream consumers can filter on quality. Each required input
+    (HR, SpO2, respiration, sleep-assessment, intraday-rhr) flips the
+    flag to `"partial"` when missing or header-only; HRV-summary
+    missing keeps the flag at `"full"` (HRV is optional on watches
+    without an HRV-status surface). Body-battery missing flips the flag.
+  - `DAILY_SUMMARY_COLS` is the schema SSOT (mirrors `_sleep.SLEEP_COLS`
+    pattern). Schema is locked at v0.3.0 — additions are append-only.
+  - CLI: single-day mode (`--out`) + batch mode (`--all --out-dir`).
+
+- **`build_sleep_stage_grid` — per-minute stage grid (revised #8).**
+  Expands `sleep-levels.csv` transitions into a fixed-cadence grid
+  (default 60 s, accepts 30 s) using `_sleep.stage_at()`. Brief
+  in-sleep arousals inherit the surrounding non-awake stage —
+  matching semantics already used in `analyze_spo2_vs_stage`. Edge
+  cases handled: empty/single-row sleep-levels (skip with warn),
+  duplicate timestamps (latest wins), unsorted input (defensive sort),
+  all-awake transitions (empty stage column + warn). Per-stage totals
+  are explicitly out of scope — they belong in `build_daily_summary`
+  from the official source.
+
+- **`scripts/sleep_transition_vs_official.py` — validation script.**
+  Anyone with their own daily/ + sleep-official.csv can re-run the
+  validation that supports the codebase's sleep-stage warnings.
+  Library form (`blackswan._sleep_validation`) is unit-testable.
+  Outliers anonymize to `night_N` by default; `--show-dates` is for
+  local audit only and should never produce a committed markdown.
+
+- **`docs/sleep-validation.md` — n=66 evidence.** Replaces anecdotal
+  "10x+", "12x", "1.4-4.5×" claims in `parse_daily_fit.py` and
+  `analyze_spo2_vs_stage.py` docstrings with a reproducible table:
+  - Naive awake median 7×, p75 10.5×, max 35× (vivoactive 5, n=66).
+  - Smart awake collapses to 0× by design (info-loss tradeoff).
+  - Smart deep/light/REM medians: 0.90× / 1.11× / 0.99× — central
+    tendency near 1.0× but per-night noise is large (deep range
+    [0.20×, 3.95×]).
+
+### Changed
+- **Docstring patches** in `parse_daily_fit.py` and
+  `analyze_spo2_vs_stage.py` reference `docs/sleep-validation.md` and
+  drop the unsupported "1.4-4.5× systematic divergence" framing.
+- **README pipeline diagram** shows the daily-summary path with the
+  `sleep-official.csv` requirement called out.
+- **`scripts/check-pii.sh`** adds a real-year ISO-date guard for
+  `docs/` and `tests/` (year 2000 is the only allowed date convention).
+
+### Notes
+- Body battery level-curve columns (`body_battery_min` / `_max` /
+  `_delta`) are **deferred to v0.3.1** until FIT field presence on
+  vivoactive 5 is smoke-tested. v0.3.0 ships only the bulk-export
+  passthrough (`body_battery_charged` / `body_battery_drained` — energy
+  in/out).
+- 45 new tests across three files (validation, stage-grid, daily-summary)
+  on top of the existing strength + cardio suites. Synthetic fixtures
+  use year=2000 timestamps per repo convention.
+- TODOs added: `consolidate_daily_summaries` (multi-row trend CSV),
+  shared `_errors.py` for SSOT-class exceptions.
+
 ## [0.2.2] - 2026-05-07
 
 ### Fixed

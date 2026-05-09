@@ -208,3 +208,56 @@ caller-discoverable.
 
 **When to revisit:** when multi-device data lands and ghost-emission
 patterns diverge across vendors.
+
+## consolidate_daily_summaries (multi-row trend CSV)
+
+**Where:** new module — `src/blackswan/consolidate_daily_summaries.py`.
+
+**What:** today `build_daily_summary` writes one CSV per date. For trend
+analysis (rolling avg HR, body battery delta over weeks) a single
+multi-row CSV is more useful — stack every `{date}-daily-summary.csv` in
+a directory into `daily-summaries-all.csv`.
+
+**Why deferred:** v0.3.0's blast radius is the per-day aggregator + SSOT
+enforcement. The aggregator alone is shippable; consolidation is purely
+additive and the file format is already row-stable (`DAILY_SUMMARY_COLS`
+locked at v0.3.0).
+
+**When to revisit:** first downstream consumer that needs to plot or
+window a metric across many days.
+
+## Shared `_errors.py` for SSOT-class exceptions
+
+**Where:** new module — `src/blackswan/_errors.py`.
+
+**What:** `MissingSSOTError` lives in `build_daily_summary` today. If a
+second SSOT-required surface emerges (likely candidates: HRV daily
+summary, sleep-disruption daily totals), the exception type should move
+to a shared module so callers can `except` the family.
+
+**Why deferred:** premature abstraction with one consumer — the move is
+a 5-minute refactor when the second consumer arrives.
+
+**When to revisit:** the second module needs an SSOT-class exception or
+external callers start `isinstance`-checking against `MissingSSOTError`.
+
+## Schema-lock SSOT promotion for column-name constants
+
+**Where:** new module — `src/blackswan/_schemas.py` (or extend `_sleep.py`).
+
+**What:** column-name string lists are duplicated across modules:
+`DAILY_SUMMARY_COLS` lives in `build_daily_summary.py`, the per-stage
+column names (`deep_sec`, `light_sec`, `rem_sec`, `awake_sec`,
+`unmeasurable_sec`) appear in three places — `_sleep.SLEEP_COLS`,
+`build_daily_summary._OFFICIAL_STAGE_COLS`, and
+`analyze_spo2_vs_stage._OFFICIAL_STAGE_COLS`. Promote the stage-name
+list to a single SSOT and have callers import from there.
+
+**Why deferred:** TASTE decision from autoplan (ENG-11) — bigger refactor
+than v0.3.0's blast radius warranted. The current duplication is
+visible-and-checkable (each list is short, lints cleanly), and the
+real cost would only show up if we add a stage (e.g., `nrem_sec`).
+
+**When to revisit:** any of these triggers — adding a new stage column,
+a third consumer of the official-stage list, or a column-rename PR
+that has to touch all three sites at once.

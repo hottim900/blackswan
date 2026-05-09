@@ -21,11 +21,14 @@ IMPORTANT — sleep-level awake semantics (per-minute lookup):
 IMPORTANT — stage_minutes data source (per-night totals):
     Per-night stage durations come from sleep-official.csv (Garmin Connect
     post-processed authoritative values), NOT from naive transition math
-    on sleep-levels.csv. The transition math systematically diverges from
-    Garmin UI by 1.4-4.5x for deep/REM on individual nights. When a date
-    is missing from sleep-official.csv we fall back to transition math and
-    flag the row with stage_minutes_source='transition_fallback' so the
-    consumer knows. Pass --sleep-official to override the default path.
+    on sleep-levels.csv. Naive transition stage durations are bidirectionally
+    noisy on individual nights — central tendency is close to 1.0× (median
+    in the 0.9-1.1× band for deep/light/REM, smart-method awake collapses
+    to 0× by design) but per-night ratios swing widely. See
+    docs/sleep-validation.md for the distribution. When a date is missing
+    from sleep-official.csv we fall back to transition math and flag the
+    row with stage_minutes_source='transition_fallback' so the consumer
+    knows. Pass --sleep-official to override the default path.
 
 Usage:
     python -m blackswan.analyze_spo2_vs_stage \\
@@ -146,8 +149,8 @@ def analyze(daily_dir: Path, out_dir: Path, threshold: int,
         # Stage durations: prefer Garmin Connect post-processed values from
         # sleep-official.csv (authoritative). Fall back to transition math on
         # sleep-levels.csv only when the date is missing from official —
-        # that fallback systematically diverges from Garmin UI by 1.4-4.5x
-        # for deep/REM, but is the best we can do without an official row.
+        # that fallback is per-night noisy (see docs/sleep-validation.md),
+        # but is the best we can do without an official row.
         if date in official:
             for stage, minutes in official[date].items():
                 stage_minutes[(date, stage)] = minutes
