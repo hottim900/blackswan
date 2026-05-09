@@ -240,3 +240,24 @@ a 5-minute refactor when the second consumer arrives.
 
 **When to revisit:** the second module needs an SSOT-class exception or
 external callers start `isinstance`-checking against `MissingSSOTError`.
+
+## Schema-lock SSOT promotion for column-name constants
+
+**Where:** new module — `src/blackswan/_schemas.py` (or extend `_sleep.py`).
+
+**What:** column-name string lists are duplicated across modules:
+`DAILY_SUMMARY_COLS` lives in `build_daily_summary.py`, the per-stage
+column names (`deep_sec`, `light_sec`, `rem_sec`, `awake_sec`,
+`unmeasurable_sec`) appear in three places — `_sleep.SLEEP_COLS`,
+`build_daily_summary._OFFICIAL_STAGE_COLS`, and
+`analyze_spo2_vs_stage._OFFICIAL_STAGE_COLS`. Promote the stage-name
+list to a single SSOT and have callers import from there.
+
+**Why deferred:** TASTE decision from autoplan (ENG-11) — bigger refactor
+than v0.3.0's blast radius warranted. The current duplication is
+visible-and-checkable (each list is short, lints cleanly), and the
+real cost would only show up if we add a stage (e.g., `nrem_sec`).
+
+**When to revisit:** any of these triggers — adding a new stage column,
+a third consumer of the official-stage list, or a column-rename PR
+that has to touch all three sites at once.

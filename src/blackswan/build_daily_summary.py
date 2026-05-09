@@ -63,7 +63,9 @@ __all__ = [
 # ── Schema (SSOT) ───────────────────────────────────────────────────────────
 
 DAILY_SUMMARY_COLS = [
-    # Provenance
+    # Provenance — calendar_date is the LOCAL day (UTC+8 per _time.LOCAL_TZ)
+    # matching daily_dir's per-day CSV prefix; sleep windows that cross
+    # local midnight stay keyed to the start-day.
     "calendar_date",
     "data_completeness",
     # HR
@@ -261,7 +263,13 @@ def build_one(
     out_path: Path,
     allow_missing_sleep_official: bool = False,
 ) -> tuple[Path, str]:
-    """Build {date}-daily-summary.csv. Returns (out_path, completeness)."""
+    """Build {date}-daily-summary.csv. Returns (out_path, completeness).
+
+    `date` is the LOCAL calendar day (UTC+8 per `_time.LOCAL_TZ`) — the
+    same string `parse_daily_fit` uses to prefix per-day CSV filenames in
+    `daily_dir`. Nights that cross local midnight live under the start-day
+    key; sleep_start_gmt and sleep_end_gmt may straddle two calendar days.
+    """
     completeness = "full"
 
     # Sleep-official is the SSOT-required input for stage durations.
