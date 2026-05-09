@@ -28,6 +28,8 @@ src/blackswan/
 ├── batch_extract_fits.py            # Bulk export → per-day raw FITs
 ├── parse_daily_fit.py               # Per-day raw FITs → 12 minute-level CSVs (HR/SpO2/sleep/HRV/...)
 ├── build_sleep_official.py          # Bulk + manual single-day CSVs → sleep SSOT
+├── build_daily_summary.py           # 12 daily CSVs + sleep SSOT → one row/day (mirrors Garmin Connect)
+├── build_sleep_stage_grid.py        # sleep-levels → per-minute stage grid for HR/SpO2 cross-tab
 ├── analyze_spo2_vs_stage.py         # SpO2 × sleep stage cross-day analysis
 ├── detect_hr_artifacts.py           # Activity FIT → optical HR sensor failure detection
 ├── segment_uphill.py                # Activity FIT → climb segments (alt min → alt max)
@@ -39,6 +41,7 @@ src/blackswan/
 ├── strength_metrics.py              # Cross-session strength comparison + pairing
 ├── forensic_spo2_event.py           # Sustained-desaturation event reconstruction
 ├── _sleep.py                        # shared sleep-stage utilities
+├── _sleep_validation.py             # naive/smart transition math vs sleep-official (n=N)
 └── _time.py                         # shared LOCAL_TZ constant (UTC+8)
 ```
 
@@ -65,13 +68,18 @@ Garmin GDPR bulk export.zip                    Manual single-day CSVs (recent da
    │                                  │                           │
    │                                  └─── build_sleep_official ──┘
    │                                            ↓
-   │                                    sleep-official.csv (SSOT)
-   │
-   └── batch_extract_fits      → raw-fit/YYYY-MM-DD/
-            │
-            └── parse_daily_fit   → daily/*.csv
-                     │
-                     └── analyze_spo2_vs_stage  → analysis/*.csv
+   │                                    sleep-official.csv (SSOT) ─┐
+   │                                                               │
+   └── batch_extract_fits      → raw-fit/YYYY-MM-DD/               │
+            │                                                      │
+            └── parse_daily_fit   → daily/*.csv (12 minute-level)  │
+                     │                       │                     │
+                     │                       ├── analyze_spo2_vs_stage  → analysis/*.csv
+                     │                       ├── build_sleep_stage_grid → daily/*-sleep-stage-grid.csv
+                     │                       │
+                     │                       └── build_daily_summary  ──┘  (REQUIRES sleep-official.csv)
+                     │                                ↓
+                     │                       daily-summary/{date}-daily-summary.csv
 
 Activity FIT (workout)
    │
@@ -181,6 +189,29 @@ The detector flag is **advisory** — it does NOT auto-exclude flagged sets. Pas
 
 **Don't compare strength deltas against cardio's ±5% noise floor.** Cardio's ±3-5 bpm was calibrated against uphill intervals at constant external workload; strength load varies set-to-set so the noise floor doesn't transfer. v1 reports raw `hr_delta_stdev` and `hr_delta_iqr` as advisory only.
 
+## Daily summary
+
+`build_daily_summary` aggregates the 12 minute-level CSVs from `parse_daily_fit` into a single per-day CSV that mirrors Garmin Connect's web export — HR, SpO2, respiration (with sleep/awake split), HRV passthrough, sleep stage durations, body battery in/out.
+
+**Sleep stage durations require `sleep-official.csv`.** Naive transition math on `sleep-levels.csv` is NOT a fallback by default — see [`docs/sleep-validation.md`](docs/sleep-validation.md) for the n=66 evidence supporting this requirement (median naive awake overstates Garmin Connect by 7×, p75 10.5×, max 35×). Missing `sleep-official.csv` raises `MissingSSOTError` with a remediation pointer; pass `--allow-missing-sleep-official` to downgrade to partial mode and emit empty stage columns rather than untrustworthy ones.
+
+```bash
+# Single day — pass --date or name --out as YYYY-MM-DD-daily-summary.csv
+python -m blackswan.build_daily_summary garmin/timeseries/daily \
+    --date 2000-01-15 \
+    --sleep-official garmin/timeseries/history/sleep-official.csv \
+    --bulk-history garmin/timeseries/history/daily-summary.csv \
+    --out garmin/timeseries/daily-summary/2000-01-15-daily-summary.csv
+
+# Batch
+python -m blackswan.build_daily_summary garmin/timeseries/daily \
+    --sleep-official garmin/timeseries/history/sleep-official.csv \
+    --bulk-history garmin/timeseries/history/daily-summary.csv \
+    --out-dir garmin/timeseries/daily-summary/ --all
+```
+
+The companion `build_sleep_stage_grid` expands `sleep-levels.csv` into a per-minute stage grid (default 60 s, accepts 30 s) for cross-tab with HR/SpO2/respiration. It does NOT carry per-stage totals — those belong in `build_daily_summary` from the official source.
+
 ## Methodology — 4-Layer Analysis
 
 When you have a workout to interpret, lock layers in order. Don't move to Layer N+1 until Layer N is reviewer-approved.
@@ -230,6 +261,8 @@ Alpha. The pipeline has been validated against hand-marked training-log data (pe
 - ✅ Bulk export parsing
 - ✅ Per-day FIT parsing
 - ✅ Sleep SSOT synthesis
+- ✅ Sleep transition math validation (n=66, vivoactive 5)
+- ✅ Daily summary aggregator with SSOT enforcement
 - ✅ HR artifact detection
 - ✅ Authoritative climb segmentation (validated against hand-marked log)
 - ✅ CC + confounder correction

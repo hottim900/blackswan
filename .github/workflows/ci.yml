@@ -51,8 +51,16 @@ jobs:
           import blackswan.parse_bulk_export, blackswan.parse_daily_fit, blackswan.batch_extract_fits
           import blackswan.build_sleep_official, blackswan.analyze_spo2_vs_stage
           import blackswan.csv_fit_crosscheck, blackswan.forensic_spo2_event, blackswan._sleep
-          print('all 11 modules imported')
+          import blackswan.build_daily_summary, blackswan.build_sleep_stage_grid
+          print('all 13 modules imported')
           "
+
+      - name: --help smoke
+        run: |
+          python -m blackswan.build_daily_summary --help > /dev/null
+          python -m blackswan.build_sleep_stage_grid --help > /dev/null
+          python scripts/sleep_transition_vs_official.py --help > /dev/null
+          echo '--help smoke ok'
 
       - name: __all__ exports exist
         run: |
