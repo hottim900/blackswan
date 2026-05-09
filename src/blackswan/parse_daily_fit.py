@@ -34,30 +34,32 @@ WARNING — sleep-levels.csv semantics:
     'awake' transition is a brief arousal event (often < 1 min), NOT a
     sustained wake state filling the gap to the next transition. Naive
     transition→duration arithmetic (e.g. "time from awake-transition to
-    next light-transition = 22 min awake") overstates awake time by 10x+
-    on typical nights.
+    next light-transition = 22 min awake") substantially overstates awake
+    time on typical nights — see docs/sleep-validation.md for the
+    distribution and `scripts/sleep_transition_vs_official.py` to
+    reproduce on your own archive.
 
 WARNING — sleep-assessment.csv no longer carries awake_total_sec / stage
 durations:
     Earlier versions exported a private FIT field 16 as `awake_total_sec`,
     presented as the authoritative awake total. This was removed because
     field 16 is the raw classifier value — not the post-processed value
-    Garmin Connect's UI displays. Two failure modes seen:
+    Garmin Connect's UI displays. Two failure modes are documented in
+    docs/sleep-validation.md:
 
     (a) Complex nights with many brief arousals: classifier under-counts
-        awake. Observed case: field 16 = 126s ≈ 2 min vs Garmin UI 27 min.
-        Off by 12x.
+        awake (field 16 reads well below the Garmin UI value).
 
-    (b) Simple nights, delayed UI re-processing: observed case where field
-        16 = 126s and Garmin Connect UI also showed 2 min at the time of
-        cross-check; the next morning the same night re-downloaded from
-        Garmin showed 4 min. UI re-processes hours/days later; field 16 is
-        frozen at classifier-write time.
+    (b) Delayed UI re-processing: Garmin Connect re-processes hours or
+        days later, so the same night can read differently if it is
+        re-downloaded the next morning. Field 16 is frozen at classifier-
+        write time.
 
     There is no signal inside the FIT to predict whether a given night will
     be re-processed. So all stage durations / awake totals must come from
     Garmin's post-processed surface — sleep-official.csv (which merges
-    bulk-export sleep-all.csv with manual single-day Chinese CSVs).
+    bulk-export sleep-all.csv with manual single-day Chinese CSVs). The
+    daily aggregator (`build_daily_summary`) enforces this requirement.
 
 Usage:
     python -m blackswan.parse_daily_fit <day_dir> <out_dir>
