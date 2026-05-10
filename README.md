@@ -191,7 +191,7 @@ The detector flag is **advisory** — it does NOT auto-exclude flagged sets. Pas
 
 ## Daily summary
 
-`build_daily_summary` aggregates the 12 minute-level CSVs from `parse_daily_fit` into a single per-day CSV that mirrors Garmin Connect's web export — HR, SpO2, respiration (with sleep/awake split), HRV passthrough, sleep stage durations, body battery in/out.
+`build_daily_summary` aggregates the 12 minute-level CSVs from `parse_daily_fit` into a single per-day CSV that mirrors Garmin Connect's web export — HR + respiration (each with sleep/awake split), SpO2, HRV passthrough, sleep stage durations, body battery in/out. HR and respiration aggregates filter Garmin sentinels (HR=0/255 dropouts, respiration=−1/−2 unmeasurable) before averaging; raw per-minute CSVs preserve sentinels for downstream inspection.
 
 **Sleep stage durations require `sleep-official.csv`.** Naive transition math on `sleep-levels.csv` is NOT a fallback by default — see [`docs/sleep-validation.md`](docs/sleep-validation.md) for the n=66 evidence supporting this requirement (median naive awake overstates Garmin Connect by 7×, p75 10.5×, max 35×). Missing `sleep-official.csv` raises `MissingSSOTError` with a remediation pointer; pass `--allow-missing-sleep-official` to downgrade to partial mode and emit empty stage columns rather than untrustworthy ones.
 
