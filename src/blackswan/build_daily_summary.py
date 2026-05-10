@@ -60,6 +60,17 @@ __all__ = [
 ]
 
 
+# ── Sentinel / sanity bounds ────────────────────────────────────────────────
+
+# Garmin's `respiration_rate_mesgs` writes -1 (and occasionally -2) when the
+# device cannot measure breathing; raw values 0-3 are also physiologically
+# implausible (clinical lower bound for living humans is ~4 brpm in deep
+# meditation). Floor at 4 to drop both Garmin sentinels and low-confidence
+# readings. Applied to all respiration aggregates (min/max/avg + sleep/awake
+# split). See issue #10.
+MIN_PHYSIOLOGICAL_BRPM = 4
+
+
 # ── Schema (SSOT) ───────────────────────────────────────────────────────────
 
 DAILY_SUMMARY_COLS = [
@@ -141,6 +152,21 @@ def _to_float(s: str | None) -> float | None:
 def _to_int(s: str | None) -> int | None:
     v = _to_float(s)
     return int(v) if v is not None else None
+
+
+def _filter_physiological_respiration(rows: list[dict]) -> list[dict]:
+    """Drop respiration readings below `MIN_PHYSIOLOGICAL_BRPM`.
+
+    Garmin emits -1/-2 sentinels when measurement fails; values 0-3 are
+    sub-physiological. Applied before all respiration aggregations
+    (min/max/avg + sleep/awake split). See issue #10.
+    """
+    out: list[dict] = []
+    for row in rows:
+        v = _to_float(row.get("respiration_rate_brpm"))
+        if v is not None and v >= MIN_PHYSIOLOGICAL_BRPM:
+            out.append(row)
+    return out
 
 
 def _aggregate_floats(rows, col: str) -> dict:
@@ -302,10 +328,22 @@ def build_one(
 
     hr_rows = inputs["hr.csv"]
     spo2_rows = inputs["spo2.csv"]
-    resp_rows = inputs["respiration.csv"]
+    resp_rows = _filter_physiological_respiration(inputs["respiration.csv"])
     sa_rows = inputs["sleep-assessment.csv"]
     hrv_rows = inputs["hrv-summary.csv"]
     rhr_rows = inputs["intraday-rhr.csv"]
+
+    # _REQUIRED_INPUTS catches missing/empty files; this catches the case
+    # where the file had rows but the sentinel filter dropped all of them.
+    # Without this, a fully-sentinel CSV would emit completeness="full" with
+    # avg=None — exactly the silent-fail mode CLAUDE.md prohibits.
+    if inputs["respiration.csv"] and not resp_rows:
+        print(
+            f"  warning: {date} respiration: all rows below "
+            "MIN_PHYSIOLOGICAL_BRPM; partial mode",
+            file=sys.stderr,
+        )
+        completeness = "partial"
 
     hr_stats = _aggregate_floats(hr_rows, "hr_bpm")
     spo2_stats = _aggregate_floats(spo2_rows, "spo2_percent")

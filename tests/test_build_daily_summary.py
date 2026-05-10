@@ -347,6 +347,61 @@ def test_t17_multi_row_hrv_takes_latest_with_warning(tmp_path, capsys):
     assert row["status"] == "LATER"
 
 
+# ── T18 ── respiration sentinel filter (issue #10)
+
+def test_t18_respiration_sentinel_filter(tmp_path):
+    """-1/-2 Garmin sentinels and sub-physiological values (0-3 brpm) drop
+    out of min/max/avg AND out of the sleep/awake split (Codex H7).
+    See issue #10."""
+    base = SYNTH_SLEEP_TS_START
+    awake_base = SYNTH_SLEEP_TS_END + timedelta(hours=2)
+    resp_rows = [
+        # Inside sleep window: sentinels + valid
+        (base + timedelta(minutes=0), -1.0),
+        (base + timedelta(minutes=1), -2.0),
+        (base + timedelta(minutes=2),  0.0),
+        (base + timedelta(minutes=3),  3.0),
+        (base + timedelta(minutes=4),  5.0),    # kept
+        (base + timedelta(minutes=5), 12.0),    # kept
+        (base + timedelta(minutes=6), 20.0),    # kept
+        # Outside sleep window: sentinel + valid
+        (awake_base + timedelta(minutes=0), -1.0),
+        (awake_base + timedelta(minutes=1), 15.0),  # kept
+        (awake_base + timedelta(minutes=2), 17.0),  # kept
+    ]
+    out_path = _build_full(tmp_path, resp_rows=resp_rows)
+    row = _read_one(out_path)
+    # Aggregate over kept-only [5, 12, 20, 15, 17]
+    assert float(row["min_respiration_brpm"]) == 5.0
+    assert float(row["max_respiration_brpm"]) == 20.0
+    assert abs(float(row["avg_respiration_brpm"]) - 13.8) < 1e-6
+    assert int(row["n_respiration_readings"]) == 5
+    # Split inherits filter — sleep mean over [5, 12, 20]
+    assert abs(float(row["sleep_avg_respiration_brpm"]) - 37.0 / 3.0) < 1e-6
+    # Awake mean over [15, 17]
+    assert abs(float(row["awake_avg_respiration_brpm"]) - 16.0) < 1e-6
+
+
+# ── T22 ── all-sentinel respiration → partial (audit F1)
+
+def test_t22_all_sentinel_respiration_partial(tmp_path):
+    """Every respiration row is sentinel → all aggregate cells empty,
+    n_respiration_readings == 0, completeness=partial. Catches the
+    silent-success mode where _REQUIRED_INPUTS sees rows but the filter
+    drops all of them."""
+    base = SYNTH_SLEEP_TS_START
+    resp_rows = [(base + timedelta(minutes=i), -1.0) for i in range(5)]
+    out_path = _build_full(tmp_path, resp_rows=resp_rows)
+    row = _read_one(out_path)
+    assert row["avg_respiration_brpm"] == ""
+    assert row["min_respiration_brpm"] == ""
+    assert row["max_respiration_brpm"] == ""
+    assert row["n_respiration_readings"] == "0"
+    assert row["sleep_avg_respiration_brpm"] == ""
+    assert row["awake_avg_respiration_brpm"] == ""
+    assert row["data_completeness"] == "partial"
+
+
 # ── T-PII1 ───────────────────────────────────────────────────────────────────
 
 def test_tpii1_no_real_year_dates_in_output(tmp_path):
