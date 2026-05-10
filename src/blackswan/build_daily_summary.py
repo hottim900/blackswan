@@ -72,6 +72,16 @@ __all__ = [
 # split). See issue #10.
 MIN_PHYSIOLOGICAL_BRPM = 4
 
+# vivoactive 5's optical HR sensor emits 0 on dropout and historically 255 as
+# a high-end sentinel. Bounds [25, 220] catch those plus sub-25 and >220
+# outliers that are physiologically implausible for waking adults; the lower
+# floor of 25 (vs the more conservative 30) preserves trained-athlete RHR
+# (cyclist resting HR routinely sits in the low 30s). Applied to HR
+# aggregate (avg) + sleep/awake split + the resting-HR scan in `_resting_hr`.
+# See issue #10 + audit decision 15.
+MIN_PHYSIOLOGICAL_BPM = 25
+MAX_PHYSIOLOGICAL_BPM = 220
+
 
 # ── Schema (SSOT) ───────────────────────────────────────────────────────────
 
@@ -173,6 +183,21 @@ def _filter_physiological_respiration(rows: list[dict]) -> list[dict]:
     return out
 
 
+def _filter_physiological_hr(rows: list[dict]) -> list[dict]:
+    """Drop HR readings outside `[MIN_PHYSIOLOGICAL_BPM, MAX_PHYSIOLOGICAL_BPM]`.
+
+    Catches vivoactive 5's optical-HR-dropout `0` + historical `255` high
+    sentinel + sub-25 / >220 implausible values. Applied before all HR
+    aggregations (avg + sleep/awake split). See issue #10.
+    """
+    out: list[dict] = []
+    for row in rows:
+        v = _to_float(row.get("hr_bpm"))
+        if v is not None and MIN_PHYSIOLOGICAL_BPM <= v <= MAX_PHYSIOLOGICAL_BPM:
+            out.append(row)
+    return out
+
+
 def _aggregate_floats(rows, col: str) -> dict:
     """Return avg/min/max/n for a numeric column. Empty → all None / 0."""
     vals: list[float] = []
@@ -244,14 +269,19 @@ _split_respiration_by_window = _split_floats_by_window
 def _resting_hr(rows: list[dict]) -> float | None:
     """Latest non-null `current_day_resting_hr_bpm` (resting trend stabilizes
     over the day; the most recent reading is the day's authoritative value).
-    Falls back to `resting_hr_bpm` when current_day is empty."""
+    Falls back to `resting_hr_bpm` when current_day is empty.
+
+    Skips rows whose value falls outside `[MIN_PHYSIOLOGICAL_BPM,
+    MAX_PHYSIOLOGICAL_BPM]`. vivoactive 5 can write `current_day=0` on a
+    dropout-tail end-of-day reading; without this guard the day's resting
+    HR would silently fall to 0. See issue #10 + audit Codex H4."""
     if not rows:
         return None
     sorted_rows = sorted(rows, key=lambda r: (r.get("timestamp") or ""))
     for col in ("current_day_resting_hr_bpm", "resting_hr_bpm"):
         for row in reversed(sorted_rows):
             v = _to_float(row.get(col))
-            if v is not None:
+            if v is not None and MIN_PHYSIOLOGICAL_BPM <= v <= MAX_PHYSIOLOGICAL_BPM:
                 return v
     return None
 
@@ -346,7 +376,7 @@ def build_one(
                   file=sys.stderr)
             completeness = "partial"
 
-    hr_rows = inputs["hr.csv"]
+    hr_rows = _filter_physiological_hr(inputs["hr.csv"])
     spo2_rows = inputs["spo2.csv"]
     resp_rows = _filter_physiological_respiration(inputs["respiration.csv"])
     sa_rows = inputs["sleep-assessment.csv"]
@@ -357,6 +387,13 @@ def build_one(
     # where the file had rows but the sentinel filter dropped all of them.
     # Without this, a fully-sentinel CSV would emit completeness="full" with
     # avg=None — exactly the silent-fail mode CLAUDE.md prohibits.
+    if inputs["hr.csv"] and not hr_rows:
+        print(
+            f"  warning: {date} hr: all rows outside "
+            "[MIN_PHYSIOLOGICAL_BPM, MAX_PHYSIOLOGICAL_BPM]; partial mode",
+            file=sys.stderr,
+        )
+        completeness = "partial"
     if inputs["respiration.csv"] and not resp_rows:
         print(
             f"  warning: {date} respiration: all rows below "

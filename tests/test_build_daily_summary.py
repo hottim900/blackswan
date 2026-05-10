@@ -468,6 +468,78 @@ def test_t24_tz_naive_timestamps_normalized_to_local(tmp_path):
     assert float(row["awake_avg_hr_bpm"]) == 80.0
 
 
+# ── T21 ── HR sentinel filter (issue #10 P7)
+
+def test_t21_hr_sentinel_filter(tmp_path):
+    """HR=0 (vivoactive 5 dropout) and HR=255 (high sentinel) drop from avg
+    + sleep/awake split, alongside sub-25 / >220 implausible values. The
+    floor (25) and cap (220) are inclusive — the boundary readings are
+    kept."""
+    sleep_start = SYNTH_SLEEP_TS_START
+    sleep_end = SYNTH_SLEEP_TS_END
+    hr_rows = [
+        # In sleep window: sentinels + valid + boundaries
+        (sleep_start + timedelta(minutes=0),    0),    # vivoactive 5 dropout
+        (sleep_start + timedelta(minutes=1),    1),    # sub-physiological
+        (sleep_start + timedelta(minutes=2),   24),    # below floor
+        (sleep_start + timedelta(minutes=3),   25),    # exact floor — kept
+        (sleep_start + timedelta(minutes=4),  120),    # kept
+        (sleep_start + timedelta(minutes=5),  220),    # exact cap — kept
+        (sleep_start + timedelta(minutes=6),  221),    # above cap
+        (sleep_start + timedelta(minutes=7),  255),    # high sentinel
+        # Outside sleep window
+        (sleep_end + timedelta(hours=1),  0),    # dropout
+        (sleep_end + timedelta(hours=2),  80),   # kept
+        (sleep_end + timedelta(hours=3),  80),   # kept
+    ]
+    out_path = _build_full(tmp_path, hr_rows=hr_rows)
+    row = _read_one(out_path)
+    # Filter kept: [25, 120, 220] sleep + [80, 80] awake = 5 readings
+    assert int(row["n_hr_readings"]) == 5
+    assert abs(float(row["avg_hr_bpm"]) - (25 + 120 + 220 + 80 + 80) / 5) < 1e-6
+    assert abs(float(row["sleep_avg_hr_bpm"]) - (25 + 120 + 220) / 3) < 1e-6
+    assert float(row["awake_avg_hr_bpm"]) == 80.0
+
+
+# ── T23 ── all-sentinel HR → partial (audit F1)
+
+def test_t23_all_sentinel_hr_partial(tmp_path):
+    """Every HR row is a sentinel → all aggregates empty, n_hr_readings == 0,
+    completeness=partial. Mirrors T22 for HR."""
+    base = SYNTH_SLEEP_TS_START
+    hr_rows = [
+        (base + timedelta(minutes=0),   0),
+        (base + timedelta(minutes=1),   0),
+        (base + timedelta(minutes=2), 255),
+        (base + timedelta(minutes=3),   1),
+    ]
+    out_path = _build_full(tmp_path, hr_rows=hr_rows)
+    row = _read_one(out_path)
+    assert row["avg_hr_bpm"] == ""
+    assert row["n_hr_readings"] == "0"
+    assert row["sleep_avg_hr_bpm"] == ""
+    assert row["awake_avg_hr_bpm"] == ""
+    assert row["data_completeness"] == "partial"
+
+
+# ── T25 ── _resting_hr skips sentinel rows (audit Codex H4)
+
+def test_t25_resting_hr_skips_sentinel_rows(tmp_path):
+    """The latest intraday-rhr row may carry HR=0 on a dropout-tail
+    reading; `_resting_hr` skips it and falls back to the next valid
+    earlier row instead of returning the dropout value."""
+    base = SYNTH_SLEEP_TS_START
+    intraday_rhr_rows = [
+        # Earlier valid reading
+        (base - timedelta(hours=2), 58, 58),
+        # Latest reading is a dropout sentinel — must be skipped
+        (base, 0, 0),
+    ]
+    out_path = _build_full(tmp_path, intraday_rhr_rows=intraday_rhr_rows)
+    row = _read_one(out_path)
+    assert float(row["resting_hr_bpm"]) == 58.0
+
+
 # ── T22 ── all-sentinel respiration → partial (audit F1)
 
 def test_t22_all_sentinel_respiration_partial(tmp_path):
