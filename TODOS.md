@@ -261,3 +261,94 @@ real cost would only show up if we add a stage (e.g., `nrem_sec`).
 **When to revisit:** any of these triggers — adding a new stage column,
 a third consumer of the official-stage list, or a column-rename PR
 that has to touch all three sites at once.
+
+## v0.4.0 / future — daily_summary metric authority + sanity layer
+
+Captured by /autoplan during the v0.3.1 patch (issue #10) review.
+
+### Approach D: cross-cutting `_drop_below_floor` helper
+
+**What:** generalize `_filter_physiological_respiration` +
+`_filter_physiological_hr` into one helper `_drop_below_floor(rows, col)`
+driven by a dict
+`_PHYSIOLOGICAL_FLOORS = {"hr_bpm": (25, 220), "respiration_rate_brpm":
+(4, None), "spo2_percent": ...}`.
+
+**Why deferred:** v0.3.1 user choice B at the premise gate kept
+per-metric helpers for narrowest patch scope. Approach D adds SpO2 in
+one dict entry instead of one helper + one constant + one test, but
+only pays off once SpO2 actually needs sentinel filtering.
+
+**When to revisit:** first SpO2 sentinel finding from
+`scripts/spo2_audit.sh`, or when adding a 4th physiological metric.
+
+### `_CompletenessTracker` centralization
+
+**What:** central tracker that the rest of `build_one` writes to (file
+missing, bulk missing, session-window empty, all-sentinel CSV) and the
+assembly step reads. Replaces the 4+ scattered
+`completeness = "partial"` assignments.
+
+**Why deferred:** out of scope for the v0.3.1 patch. Currently 4
+scattered assignments; v0.4.0 will likely have 5+ once SpO2 / additional
+sentinel filters land.
+
+**When to revisit:** when scattered partial-flag count exceeds 6 and
+review fatigue starts surfacing missed signals.
+
+### P3 rename: `avg_hr_bpm` → `all_day_avg_hr_bpm`
+
+**What:** rename to make the implicit "all-day" qualifier explicit, so
+the `all_day_*` / `sleep_*` / `awake_*` triple has consistent
+qualifier-by-name.
+
+**Why deferred:** v0.3.1 user chose B (additive only). Rename adds
+backwards-compat cost (every reader updates). Defer until a multi-user
+count or a natural v1.0.0 schema-redesign moment.
+
+**When to revisit:** v1.0.0 / first non-self user / cross-pipeline
+schema migration.
+
+### P5 empirical Issue #3: reverse-engineer Connect's awake-mean filter
+
+**What:** afternoon-scale empirical investigation using
+`{date}-activity.csv` (`activity_intensity` already in parser output) to
+test whether Connect's "清醒平均" excludes minutes with `intensity == 0`.
+Either fix the gap or document with empirical evidence instead of
+speculation.
+
+**Why deferred:** v0.3.1 user chose B (doc-only stays). Investigation
+ROI is uncertain — possible mechanisms include `activity_intensity`,
+HR-variability gating, or the Sleep tab vs CSV column source diverging.
+
+**When to revisit:** if the next 4-day comparison shows the awake gap is
+worth fixing in user's eyes, OR when v0.4.0 metric-authority work
+surfaces it.
+
+### Mechanical gate for "The Assignment"
+
+**What:** either a `scripts/validate_daily_summary_against_archive.py`
+that runs the 4 issue days and prints pass/fail, OR a PR template that
+requires pasting the output. Make pre-PR validation a hard gate, not a
+suggestion.
+
+**Why deferred:** process not code. User discretion. /autoplan flagged
+the soft-blocker risk but rollback is clean (raw CSVs unchanged).
+
+**When to revisit:** if "The Assignment" is skipped on this PR and a
+post-merge surprise surfaces.
+
+### Metric-authority model (codex CEO reframe)
+
+**What:** define per-column metadata: source (raw FIT vs Connect-derived
+vs blackswan-aggregated), window (all-day / sleep-window / awake),
+filter policy (sentinel-floor / Connect-equivalence / unfiltered), and
+Connect-equivalence status. Either as docstring schema, sidecar JSON,
+or column-name encoding.
+
+**Why deferred:** product-strategy work, not patch scope. Codex flagged
+that every bugfix smuggles product strategy into column names; v0.3.1
+confirms the risk class but doesn't resolve it.
+
+**When to revisit:** v0.4.0 design phase / when adding a 5th aggregate
+metric / when first non-self consumer lands.

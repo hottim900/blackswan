@@ -28,6 +28,27 @@ Per-input policy (_INPUT_REQUIREMENTS):
         HRV is optional on watches without an HRV-status surface.
     Bulk history missing or row missing → body_battery cols None + partial.
 
+Physiological sentinel filters:
+    Garmin's `respiration_rate_mesgs` emits -1 (and occasionally -2) when
+    the device cannot measure breathing; vivoactive 5's optical HR sensor
+    emits 0 on dropout and 255 as a high-end sentinel. All daily-summary
+    aggregates are bounded by `MIN_PHYSIOLOGICAL_BRPM=4` (respiration) and
+    `[MIN_PHYSIOLOGICAL_BPM, MAX_PHYSIOLOGICAL_BPM]=[25, 220]` (HR) before
+    aggregation, sleep/awake split, and the resting-HR scan. The minute-
+    level raw CSVs from parse_daily_fit preserve sentinels for downstream
+    inspection; cleansing happens at the summary boundary only.
+    `n_hr_readings` and `n_respiration_readings` reflect post-filter
+    counts (a fully-sentinel day reports n=0 + completeness=partial).
+
+Awake respiration vs Garmin Connect:
+    `awake_avg_respiration_brpm` here = mean of all respiration readings
+    OUTSIDE the sleep session window — including quiet bed-rest minutes.
+    Garmin Connect's "清醒平均 / awake average" appears to apply
+    additional server-side activity filtering (mechanism undocumented;
+    n=4 days observed delta of ~5 brpm). Users wanting a Connect-aligned
+    awake number should rely on `sleep_avg_respiration_brpm`, which DOES
+    match Connect's sleep mean.
+
 CLI:
     python -m blackswan.build_daily_summary daily/ \\
         --sleep-official garmin/timeseries/history/sleep-official.csv \\

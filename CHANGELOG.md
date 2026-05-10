@@ -4,6 +4,86 @@ All notable changes to this project will be documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-05-10
+
+### Fixed
+- **Sentinel passthrough closed for `build_daily_summary` aggregates
+  (closes #10).** v0.3.0 aggregated raw `respiration_rate_brpm` values
+  that included Garmin's `-1` / `-2` unmeasurable-minute sentinels and
+  vivoactive 5's `hr_bpm = 0` optical-dropout values, so
+  `min_respiration_brpm` was always wrong on any day with unmeasurable
+  minutes and `avg_hr_bpm` ran low on dropout-heavy days.
+  - Respiration is filtered at `MIN_PHYSIOLOGICAL_BRPM = 4` before all
+    aggregates (min/max/avg + sleep/awake split). Drops `-1` / `-2`
+    Garmin sentinels and the 0-3 brpm sub-physiological tail.
+  - HR is bounded by `[MIN_PHYSIOLOGICAL_BPM = 25, MAX_PHYSIOLOGICAL_BPM
+    = 220]` before all aggregates (avg + sleep/awake split + resting).
+    Catches the vivoactive 5 `0` dropout, the historical `255` high
+    sentinel, and sub-25 / >220 implausible values without dropping
+    trained-athlete resting HR (cyclist RHR routinely sits in low 30s).
+  - All-sentinel CSVs now flip `data_completeness=partial` instead of
+    silently emitting `"full"` with `avg=None`.
+  - Raw `{date}-hr.csv` and `{date}-respiration.csv` from
+    `parse_daily_fit` are unchanged; cleansing happens at the summary
+    boundary so downstream tools can still inspect sentinel rates.
+
+### Added
+- **`sleep_avg_hr_bpm` and `awake_avg_hr_bpm` columns (closes #10).**
+  Mean HR within and outside the sleep session window, computed via the
+  same window helper that already drives the respiration split. Empty
+  session window → both `None` + `data_completeness=partial`. Column
+  names describe the computation (mean within sleep window) rather than
+  claiming parity with any specific Garmin Connect surface; on the
+  issue-#10 4-day comparison the values land within sensor-noise
+  distance of Connect's "跨日心率 / overnight HR" but no parity guarantee
+  is made.
+- **`scripts/spo2_audit.sh`** — one-time pre-PR helper that scans a
+  user archive for SpO2 sentinel rows. If it returns hits in v0.4.0
+  triage, the same per-metric filter pattern extends to SpO2 alongside
+  the cross-cutting `_drop_below_floor` refactor (Approach D in TODOS).
+
+### Changed
+- **`_split_respiration_by_window` is now `_split_floats_by_window`**
+  with a `val_col` kwarg so HR + respiration share the implementation.
+  Function is module-private (underscore-prefixed); no compat alias is
+  retained per CLAUDE.md no-compat-shim policy.
+- **`n_hr_readings` and `n_respiration_readings` now reflect post-filter
+  readings** (was: total CSV rows). Days with sentinel-heavy minutes
+  report a smaller `n` than under v0.3.0.
+- **`_split_floats_by_window` normalizes tz-naive timestamps to
+  `LOCAL_TZ`** before comparing against the session window.
+  `parse_daily_fit` emits tz-aware via `_local()`, but legacy or
+  hand-authored CSVs may be naive and previously crashed batch builds
+  with a `TypeError` on `<=`.
+
+### Documentation
+- **Module docstring documents the sentinel filter and the
+  awake-respiration divergence from Garmin Connect's "清醒平均"** (closes
+  #10 part 3). `awake_avg_respiration_brpm` here = mean OUTSIDE sleep
+  window (includes quiet bed-rest minutes); Connect appears to apply
+  additional server-side activity filtering (mechanism undocumented).
+  Users seeking a Connect-aligned awake number should rely on
+  `sleep_avg_respiration_brpm`, which matches Connect's sleep mean.
+
+### Schema
+- `DAILY_SUMMARY_COLS` appends `sleep_avg_hr_bpm` and `awake_avg_hr_bpm`
+  AFTER the v0.3.0 prefix (append-only convention; readers iterating by
+  name are unaffected). T6 schema-lock test now also asserts the v0.3.0
+  prefix is unchanged so position-indexed readers do not silently shift.
+
+### Notes
+- 9 new tests (T18-T26) cover sentinel filtering, sleep/awake split with
+  boundary inclusivity, all-sentinel partial-flag paths, tz-naive
+  normalization, and the resting-HR fallback. T1 + T6 + T11 + T12 still
+  pass with the new schema.
+- `avg_hr_bpm` rename to `all_day_avg_hr_bpm` and an empirical
+  reverse-engineering of Connect's awake-mean filter are deferred to
+  v0.4.0 (see `TODOS.md`).
+- "The Assignment" empirical validation (re-run on the 4 issue days
+  before merge) is the user's pre-merge step; rollback is clean (raw
+  CSVs unchanged), so the validation is a recommendation rather than a
+  blocker on the PR-side.
+
 ## [0.3.0] - 2026-05-10
 
 ### Added
