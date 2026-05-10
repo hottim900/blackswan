@@ -76,6 +76,8 @@ def test_t1_full_inputs_populate_every_column(tmp_path):
     assert row["calendar_date"] == SYNTH_SLEEP_DATE
     assert row["avg_hr_bpm"]
     assert row["resting_hr_bpm"]
+    assert row["sleep_avg_hr_bpm"]
+    assert row["awake_avg_hr_bpm"]
     assert row["avg_spo2_pct"]
     assert row["avg_respiration_brpm"]
     assert row["sleep_avg_respiration_brpm"]
@@ -86,6 +88,25 @@ def test_t1_full_inputs_populate_every_column(tmp_path):
     assert row["body_battery_charged"]
 
 
+# v0.3.0 schema, frozen verbatim. The append-only invariant means new
+# columns may extend this list (T6 below) but never reorder or remove from
+# its prefix — readers iterating columns by index stay stable.
+_V030_COLS = [
+    "calendar_date", "data_completeness",
+    "avg_hr_bpm", "n_hr_readings", "resting_hr_bpm",
+    "avg_spo2_pct", "min_spo2_pct", "max_spo2_pct", "n_spo2_readings",
+    "avg_respiration_brpm", "min_respiration_brpm", "max_respiration_brpm",
+    "n_respiration_readings",
+    "sleep_avg_respiration_brpm", "awake_avg_respiration_brpm",
+    "weekly_avg_ms", "last_night_avg_ms", "last_night_5min_high_ms",
+    "baseline_low_upper", "baseline_balanced_lower", "baseline_balanced_upper",
+    "status",
+    "sleep_start_gmt", "sleep_end_gmt", "total_sleep_sec",
+    "deep_sec", "light_sec", "rem_sec", "awake_sec", "unmeasurable_sec",
+    "body_battery_charged", "body_battery_drained",
+]
+
+
 def test_t6_schema_lock_matches_csv_header(tmp_path):
     out_path = _build_full(tmp_path)
     with out_path.open(encoding="utf-8") as f:
@@ -93,6 +114,8 @@ def test_t6_schema_lock_matches_csv_header(tmp_path):
     assert header == DAILY_SUMMARY_COLS
     # And every column appears in the row exactly once
     assert len(header) == len(set(header))
+    # v0.3.1: v0.3.0 prefix must remain stable (append-only invariant).
+    assert header[: len(_V030_COLS)] == _V030_COLS
 
 
 # ── T2 ───────────────────────────────────────────────────────────────────────
@@ -380,6 +403,69 @@ def test_t18_respiration_sentinel_filter(tmp_path):
     assert abs(float(row["sleep_avg_respiration_brpm"]) - 37.0 / 3.0) < 1e-6
     # Awake mean over [15, 17]
     assert abs(float(row["awake_avg_respiration_brpm"]) - 16.0) < 1e-6
+
+
+# ── T19 ── HR sleep/awake split (issue #10 part 2)
+
+def test_t19_hr_sleep_awake_split(tmp_path):
+    """sleep_avg_hr_bpm and awake_avg_hr_bpm reuse the same window helper as
+    respiration. Boundaries are inclusive on both ends — rows at exactly
+    session_start or session_end land in the sleep bucket; 1µs after end
+    is awake."""
+    sleep_start = SYNTH_SLEEP_TS_START
+    sleep_end = SYNTH_SLEEP_TS_END
+    hr_rows = [
+        # Inside sleep window — 4 readings @ 60 bpm
+        (sleep_start + timedelta(hours=1), 60),
+        (sleep_start + timedelta(hours=2), 60),
+        # Outside sleep window — 3 readings @ 80 bpm
+        (sleep_end + timedelta(hours=2),   80),
+        (sleep_end + timedelta(hours=4),   80),
+        # Boundaries — sleep is inclusive on both ends
+        (sleep_start,                                    60),  # exact start
+        (sleep_end,                                      60),  # exact end
+        (sleep_end + timedelta(microseconds=1),          80),  # 1µs after
+    ]
+    out_path = _build_full(tmp_path, hr_rows=hr_rows)
+    row = _read_one(out_path)
+    # Sleep readings: 4 × 60 → avg 60.
+    assert float(row["sleep_avg_hr_bpm"]) == 60.0
+    # Awake readings: 3 × 80 → avg 80.
+    assert float(row["awake_avg_hr_bpm"]) == 80.0
+    # All-day average over 7 readings stays correct (backward compat).
+    assert abs(float(row["avg_hr_bpm"]) - (60 * 4 + 80 * 3) / 7) < 1e-6
+    assert int(row["n_hr_readings"]) == 7
+
+
+# ── T20 ── empty session window blanks HR split + partial (mirrors T5d)
+
+def test_t20_hr_split_empty_session_window(tmp_path):
+    """Empty session_start/end blanks the new HR split columns and downgrades
+    to partial — same shape as T5d for respiration."""
+    out_path = _build_full(tmp_path, session_start="", session_end="")
+    row = _read_one(out_path)
+    assert row["sleep_avg_hr_bpm"] == ""
+    assert row["awake_avg_hr_bpm"] == ""
+    # Sanity: existing respiration behavior unchanged.
+    assert row["sleep_avg_respiration_brpm"] == ""
+    assert row["awake_avg_respiration_brpm"] == ""
+    assert row["data_completeness"] == "partial"
+
+
+# ── T24 ── tz-naive timestamps normalized to LOCAL_TZ (audit F3 / Codex H5)
+
+def test_t24_tz_naive_timestamps_normalized_to_local(tmp_path):
+    """Defensive contract: legacy or hand-authored CSVs may emit naive
+    timestamps. The window helper interprets naive ts as LOCAL_TZ rather
+    than crash on `<=` against the tz-aware session window."""
+    from datetime import datetime as _dt
+    naive_sleep = _dt(2000, 1, 16, 1, 0)   # 01:00 next day → inside window
+    naive_awake = _dt(2000, 1, 15, 14, 0)  # 14:00 same day → outside
+    hr_rows = [(naive_sleep, 60), (naive_awake, 80)]
+    out_path = _build_full(tmp_path, hr_rows=hr_rows)
+    row = _read_one(out_path)
+    assert float(row["sleep_avg_hr_bpm"]) == 60.0
+    assert float(row["awake_avg_hr_bpm"]) == 80.0
 
 
 # ── T22 ── all-sentinel respiration → partial (audit F1)

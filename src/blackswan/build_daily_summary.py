@@ -50,6 +50,8 @@ from datetime import datetime
 from pathlib import Path
 from statistics import mean
 
+from blackswan._time import LOCAL_TZ
+
 _OUT_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-")
 
 __all__ = [
@@ -97,6 +99,8 @@ DAILY_SUMMARY_COLS = [
     "deep_sec", "light_sec", "rem_sec", "awake_sec", "unmeasurable_sec",
     # Body battery — bulk-export passthrough (energy in/out, not level curve)
     "body_battery_charged", "body_battery_drained",
+    # v0.3.1: HR sleep/awake split — append-only per schema-lock convention.
+    "sleep_avg_hr_bpm", "awake_avg_hr_bpm",
 ]
 
 
@@ -195,30 +199,46 @@ def _parse_iso(s: str | None) -> datetime | None:
         return None
 
 
-def _split_respiration_by_window(
-    resp_rows: list[dict],
+def _split_floats_by_window(
+    rows: list[dict],
     session_start: datetime | None,
     session_end: datetime | None,
+    *,
+    val_col: str = "respiration_rate_brpm",
+    ts_col: str = "timestamp",
 ) -> tuple[float | None, float | None]:
-    """Return (sleep_avg, awake_avg). When the window is unknown both are None
-    — by design, we do NOT silently classify all readings as awake."""
+    """Return `(in_window_avg, out_window_avg)` over `val_col`.
+
+    When the window is unknown both are `None` — by design, we never
+    silently bucket all readings as out-of-window.
+    """
     if session_start is None or session_end is None:
         return None, None
-    sleep_vals: list[float] = []
-    awake_vals: list[float] = []
-    for row in resp_rows:
-        ts = _parse_iso(row.get("timestamp"))
-        v = _to_float(row.get("respiration_rate_brpm"))
+    in_vals: list[float] = []
+    out_vals: list[float] = []
+    for row in rows:
+        ts = _parse_iso(row.get(ts_col))
+        v = _to_float(row.get(val_col))
         if ts is None or v is None:
             continue
+        # parse_daily_fit emits tz-aware ISO via _local(); legacy or
+        # hand-authored CSVs may be naive. Treat naive ts as LOCAL_TZ
+        # rather than crash on `<=` against the tz-aware window.
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=LOCAL_TZ)
         if session_start <= ts <= session_end:
-            sleep_vals.append(v)
+            in_vals.append(v)
         else:
-            awake_vals.append(v)
+            out_vals.append(v)
     return (
-        mean(sleep_vals) if sleep_vals else None,
-        mean(awake_vals) if awake_vals else None,
+        mean(in_vals) if in_vals else None,
+        mean(out_vals) if out_vals else None,
     )
+
+
+# Compat alias for v0.3.0 callers — to be removed in v0.4.0. Same positional
+# signature; default `val_col="respiration_rate_brpm"` preserves behavior.
+_split_respiration_by_window = _split_floats_by_window
 
 
 def _resting_hr(rows: list[dict]) -> float | None:
@@ -369,8 +389,13 @@ def build_one(
             session_start = _parse_iso(ss)
             session_end = _parse_iso(se)
 
-    sleep_avg, awake_avg = _split_respiration_by_window(
-        resp_rows, session_start, session_end
+    sleep_avg_resp, awake_avg_resp = _split_floats_by_window(
+        resp_rows, session_start, session_end,
+        val_col="respiration_rate_brpm",
+    )
+    sleep_avg_hr, awake_avg_hr = _split_floats_by_window(
+        hr_rows, session_start, session_end,
+        val_col="hr_bpm",
     )
 
     hrv = _latest_hrv_summary(hrv_rows)
@@ -426,8 +451,8 @@ def build_one(
         "min_respiration_brpm": resp_stats["min"],
         "max_respiration_brpm": resp_stats["max"],
         "n_respiration_readings": resp_stats["n"],
-        "sleep_avg_respiration_brpm": sleep_avg,
-        "awake_avg_respiration_brpm": awake_avg,
+        "sleep_avg_respiration_brpm": sleep_avg_resp,
+        "awake_avg_respiration_brpm": awake_avg_resp,
         "sleep_start_gmt": sleep_start,
         "sleep_end_gmt": sleep_end,
         "total_sleep_sec": total_sleep,
@@ -442,6 +467,8 @@ def build_one(
         "body_battery_drained": (
             _to_int(bb_row.get("body_battery_drained")) if bb_row else None
         ),
+        "sleep_avg_hr_bpm": sleep_avg_hr,
+        "awake_avg_hr_bpm": awake_avg_hr,
     }
 
     if hrv is not None:
