@@ -76,6 +76,8 @@ def test_t1_full_inputs_populate_every_column(tmp_path):
     assert row["calendar_date"] == SYNTH_SLEEP_DATE
     assert row["avg_hr_bpm"]
     assert row["resting_hr_bpm"]
+    assert row["sleep_avg_hr_bpm"]
+    assert row["awake_avg_hr_bpm"]
     assert row["avg_spo2_pct"]
     assert row["avg_respiration_brpm"]
     assert row["sleep_avg_respiration_brpm"]
@@ -86,6 +88,25 @@ def test_t1_full_inputs_populate_every_column(tmp_path):
     assert row["body_battery_charged"]
 
 
+# v0.3.0 schema, frozen verbatim. The append-only invariant means new
+# columns may extend this list (T6 below) but never reorder or remove from
+# its prefix — readers iterating columns by index stay stable.
+_V030_COLS = [
+    "calendar_date", "data_completeness",
+    "avg_hr_bpm", "n_hr_readings", "resting_hr_bpm",
+    "avg_spo2_pct", "min_spo2_pct", "max_spo2_pct", "n_spo2_readings",
+    "avg_respiration_brpm", "min_respiration_brpm", "max_respiration_brpm",
+    "n_respiration_readings",
+    "sleep_avg_respiration_brpm", "awake_avg_respiration_brpm",
+    "weekly_avg_ms", "last_night_avg_ms", "last_night_5min_high_ms",
+    "baseline_low_upper", "baseline_balanced_lower", "baseline_balanced_upper",
+    "status",
+    "sleep_start_gmt", "sleep_end_gmt", "total_sleep_sec",
+    "deep_sec", "light_sec", "rem_sec", "awake_sec", "unmeasurable_sec",
+    "body_battery_charged", "body_battery_drained",
+]
+
+
 def test_t6_schema_lock_matches_csv_header(tmp_path):
     out_path = _build_full(tmp_path)
     with out_path.open(encoding="utf-8") as f:
@@ -93,6 +114,8 @@ def test_t6_schema_lock_matches_csv_header(tmp_path):
     assert header == DAILY_SUMMARY_COLS
     # And every column appears in the row exactly once
     assert len(header) == len(set(header))
+    # v0.3.1: v0.3.0 prefix must remain stable (append-only invariant).
+    assert header[: len(_V030_COLS)] == _V030_COLS
 
 
 # ── T2 ───────────────────────────────────────────────────────────────────────
@@ -345,6 +368,213 @@ def test_t17_multi_row_hrv_takes_latest_with_warning(tmp_path, capsys):
     assert "HRV summary rows" in captured.err
     row = _read_one(out_path)
     assert row["status"] == "LATER"
+
+
+# ── T18 ── respiration sentinel filter
+
+def test_t18_respiration_sentinel_filter(tmp_path):
+    """-1/-2 Garmin sentinels and sub-physiological values (0-3 brpm) drop
+    out of min/max/avg AND out of the sleep/awake split."""
+    base = SYNTH_SLEEP_TS_START
+    awake_base = SYNTH_SLEEP_TS_END + timedelta(hours=2)
+    resp_rows = [
+        # Inside sleep window: sentinels + valid
+        (base + timedelta(minutes=0), -1.0),
+        (base + timedelta(minutes=1), -2.0),
+        (base + timedelta(minutes=2),  0.0),
+        (base + timedelta(minutes=3),  3.0),
+        (base + timedelta(minutes=4),  5.0),    # kept
+        (base + timedelta(minutes=5), 12.0),    # kept
+        (base + timedelta(minutes=6), 20.0),    # kept
+        # Outside sleep window: sentinel + valid
+        (awake_base + timedelta(minutes=0), -1.0),
+        (awake_base + timedelta(minutes=1), 15.0),  # kept
+        (awake_base + timedelta(minutes=2), 17.0),  # kept
+    ]
+    out_path = _build_full(tmp_path, resp_rows=resp_rows)
+    row = _read_one(out_path)
+    # Aggregate over kept-only [5, 12, 20, 15, 17]
+    assert float(row["min_respiration_brpm"]) == 5.0
+    assert float(row["max_respiration_brpm"]) == 20.0
+    assert abs(float(row["avg_respiration_brpm"]) - 13.8) < 1e-6
+    assert int(row["n_respiration_readings"]) == 5
+    # Split inherits filter — sleep mean over [5, 12, 20]
+    assert abs(float(row["sleep_avg_respiration_brpm"]) - 37.0 / 3.0) < 1e-6
+    # Awake mean over [15, 17]
+    assert abs(float(row["awake_avg_respiration_brpm"]) - 16.0) < 1e-6
+
+
+# ── T19 ── HR sleep/awake split
+
+def test_t19_hr_sleep_awake_split(tmp_path):
+    """sleep_avg_hr_bpm and awake_avg_hr_bpm reuse the same window helper as
+    respiration. Boundaries are inclusive on both ends — rows at exactly
+    session_start or session_end land in the sleep bucket; 1µs after end
+    is awake."""
+    sleep_start = SYNTH_SLEEP_TS_START
+    sleep_end = SYNTH_SLEEP_TS_END
+    hr_rows = [
+        # Inside sleep window — 4 readings @ 60 bpm
+        (sleep_start + timedelta(hours=1), 60),
+        (sleep_start + timedelta(hours=2), 60),
+        # Outside sleep window — 3 readings @ 80 bpm
+        (sleep_end + timedelta(hours=2),   80),
+        (sleep_end + timedelta(hours=4),   80),
+        # Boundaries — sleep is inclusive on both ends
+        (sleep_start,                                    60),  # exact start
+        (sleep_end,                                      60),  # exact end
+        (sleep_end + timedelta(microseconds=1),          80),  # 1µs after
+    ]
+    out_path = _build_full(tmp_path, hr_rows=hr_rows)
+    row = _read_one(out_path)
+    # Sleep readings: 4 × 60 → avg 60.
+    assert float(row["sleep_avg_hr_bpm"]) == 60.0
+    # Awake readings: 3 × 80 → avg 80.
+    assert float(row["awake_avg_hr_bpm"]) == 80.0
+    # All-day average over 7 readings stays correct (backward compat).
+    assert abs(float(row["avg_hr_bpm"]) - (60 * 4 + 80 * 3) / 7) < 1e-6
+    assert int(row["n_hr_readings"]) == 7
+
+
+# ── T20 ── empty session window blanks HR split + partial (mirrors T5d)
+
+def test_t20_hr_split_empty_session_window(tmp_path):
+    """Empty session_start/end blanks the new HR split columns and downgrades
+    to partial — same shape as T5d for respiration."""
+    out_path = _build_full(tmp_path, session_start="", session_end="")
+    row = _read_one(out_path)
+    assert row["sleep_avg_hr_bpm"] == ""
+    assert row["awake_avg_hr_bpm"] == ""
+    # Sanity: existing respiration behavior unchanged.
+    assert row["sleep_avg_respiration_brpm"] == ""
+    assert row["awake_avg_respiration_brpm"] == ""
+    assert row["data_completeness"] == "partial"
+
+
+# ── T24 ── tz-naive timestamps normalized to LOCAL_TZ
+
+def test_t24_tz_naive_timestamps_normalized_to_local(tmp_path):
+    """Defensive contract: legacy or hand-authored CSVs may emit naive
+    timestamps. The window helper interprets naive ts as LOCAL_TZ rather
+    than crash on `<=` against the tz-aware session window."""
+    from datetime import datetime as _dt
+    naive_sleep = _dt(2000, 1, 16, 1, 0)   # 01:00 next day → inside window
+    naive_awake = _dt(2000, 1, 15, 14, 0)  # 14:00 same day → outside
+    hr_rows = [(naive_sleep, 60), (naive_awake, 80)]
+    out_path = _build_full(tmp_path, hr_rows=hr_rows)
+    row = _read_one(out_path)
+    assert float(row["sleep_avg_hr_bpm"]) == 60.0
+    assert float(row["awake_avg_hr_bpm"]) == 80.0
+
+
+# ── T21 ── HR sentinel filter
+
+def test_t21_hr_sentinel_filter(tmp_path):
+    """HR=0 (vivoactive 5 dropout) and HR=255 (high sentinel) drop from avg
+    + sleep/awake split, alongside sub-25 / >220 implausible values. The
+    floor (25) and cap (220) are inclusive — the boundary readings are
+    kept."""
+    sleep_start = SYNTH_SLEEP_TS_START
+    sleep_end = SYNTH_SLEEP_TS_END
+    hr_rows = [
+        # In sleep window: sentinels + valid + boundaries
+        (sleep_start + timedelta(minutes=0),    0),    # vivoactive 5 dropout
+        (sleep_start + timedelta(minutes=1),    1),    # sub-physiological
+        (sleep_start + timedelta(minutes=2),   24),    # below floor
+        (sleep_start + timedelta(minutes=3),   25),    # exact floor — kept
+        (sleep_start + timedelta(minutes=4),  120),    # kept
+        (sleep_start + timedelta(minutes=5),  220),    # exact cap — kept
+        (sleep_start + timedelta(minutes=6),  221),    # above cap
+        (sleep_start + timedelta(minutes=7),  255),    # high sentinel
+        # Outside sleep window
+        (sleep_end + timedelta(hours=1),  0),    # dropout
+        (sleep_end + timedelta(hours=2),  80),   # kept
+        (sleep_end + timedelta(hours=3),  80),   # kept
+    ]
+    out_path = _build_full(tmp_path, hr_rows=hr_rows)
+    row = _read_one(out_path)
+    # Filter kept: [25, 120, 220] sleep + [80, 80] awake = 5 readings
+    assert int(row["n_hr_readings"]) == 5
+    assert abs(float(row["avg_hr_bpm"]) - (25 + 120 + 220 + 80 + 80) / 5) < 1e-6
+    assert abs(float(row["sleep_avg_hr_bpm"]) - (25 + 120 + 220) / 3) < 1e-6
+    assert float(row["awake_avg_hr_bpm"]) == 80.0
+
+
+# ── T23 ── all-sentinel HR → partial
+
+def test_t23_all_sentinel_hr_partial(tmp_path):
+    """Every HR row is a sentinel → all aggregates empty, n_hr_readings == 0,
+    completeness=partial. Mirrors T22 for HR."""
+    base = SYNTH_SLEEP_TS_START
+    hr_rows = [
+        (base + timedelta(minutes=0),   0),
+        (base + timedelta(minutes=1),   0),
+        (base + timedelta(minutes=2), 255),
+        (base + timedelta(minutes=3),   1),
+    ]
+    out_path = _build_full(tmp_path, hr_rows=hr_rows)
+    row = _read_one(out_path)
+    assert row["avg_hr_bpm"] == ""
+    assert row["n_hr_readings"] == "0"
+    assert row["sleep_avg_hr_bpm"] == ""
+    assert row["awake_avg_hr_bpm"] == ""
+    assert row["data_completeness"] == "partial"
+
+
+# ── T25 ── _resting_hr skips sentinel rows
+
+def test_t25_resting_hr_skips_sentinel_rows(tmp_path):
+    """The latest intraday-rhr row may carry HR=0 on a dropout-tail
+    reading; `_resting_hr` skips it and falls back to the next valid
+    earlier row instead of returning the dropout value."""
+    base = SYNTH_SLEEP_TS_START
+    intraday_rhr_rows = [
+        # Earlier valid reading
+        (base - timedelta(hours=2), 58, 58),
+        # Latest reading is a dropout sentinel — must be skipped
+        (base, 0, 0),
+    ]
+    out_path = _build_full(tmp_path, intraday_rhr_rows=intraday_rhr_rows)
+    row = _read_one(out_path)
+    assert float(row["resting_hr_bpm"]) == 58.0
+
+
+# ── T26 ── _resting_hr returns None when every intraday-rhr row is sentinel
+
+def test_t26_resting_hr_all_sentinels_returns_none(tmp_path):
+    """When BOTH `current_day_resting_hr_bpm` and `resting_hr_bpm` are
+    sentinels across all rows, `_resting_hr` returns None and the output
+    cell is blank — never the sentinel."""
+    base = SYNTH_SLEEP_TS_START
+    intraday_rhr_rows = [
+        # Every row: both columns are sentinel (0 / 1 / 255 etc.)
+        (base - timedelta(hours=4),   0,   0),
+        (base - timedelta(hours=2),   1, 255),
+        (base,                      255,   0),
+    ]
+    out_path = _build_full(tmp_path, intraday_rhr_rows=intraday_rhr_rows)
+    row = _read_one(out_path)
+    assert row["resting_hr_bpm"] == ""
+
+
+# ── T22 ── all-sentinel respiration → partial
+
+def test_t22_all_sentinel_respiration_partial(tmp_path):
+    """Every respiration row is sentinel → all aggregate cells empty,
+    n_respiration_readings == 0, completeness=partial. Catches the
+    silent-success mode where _REQUIRED_INPUTS sees rows but the filter
+    drops all of them."""
+    base = SYNTH_SLEEP_TS_START
+    resp_rows = [(base + timedelta(minutes=i), -1.0) for i in range(5)]
+    out_path = _build_full(tmp_path, resp_rows=resp_rows)
+    row = _read_one(out_path)
+    assert row["avg_respiration_brpm"] == ""
+    assert row["min_respiration_brpm"] == ""
+    assert row["max_respiration_brpm"] == ""
+    assert row["n_respiration_readings"] == "0"
+    assert row["sleep_avg_respiration_brpm"] == ""
+    assert row["awake_avg_respiration_brpm"] == ""
+    assert row["data_completeness"] == "partial"
 
 
 # ── T-PII1 ───────────────────────────────────────────────────────────────────

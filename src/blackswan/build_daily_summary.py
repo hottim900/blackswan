@@ -28,6 +28,27 @@ Per-input policy (_INPUT_REQUIREMENTS):
         HRV is optional on watches without an HRV-status surface.
     Bulk history missing or row missing → body_battery cols None + partial.
 
+Physiological sentinel filters:
+    Garmin's `respiration_rate_mesgs` emits -1 (and occasionally -2) when
+    the device cannot measure breathing; vivoactive 5's optical HR sensor
+    emits 0 on dropout and 255 as a high-end sentinel. All daily-summary
+    aggregates are bounded by `MIN_PHYSIOLOGICAL_BRPM=4` (respiration) and
+    `[MIN_PHYSIOLOGICAL_BPM, MAX_PHYSIOLOGICAL_BPM]=[25, 220]` (HR) before
+    aggregation, sleep/awake split, and the resting-HR scan. The minute-
+    level raw CSVs from parse_daily_fit preserve sentinels for downstream
+    inspection; cleansing happens at the summary boundary only.
+    `n_hr_readings` and `n_respiration_readings` reflect post-filter
+    counts (a fully-sentinel day reports n=0 + completeness=partial).
+
+Awake respiration vs Garmin Connect:
+    `awake_avg_respiration_brpm` here = mean of all respiration readings
+    OUTSIDE the sleep session window — including quiet bed-rest minutes.
+    Garmin Connect's "清醒平均 / awake average" appears to apply
+    additional server-side activity filtering (mechanism undocumented;
+    n=4 days observed delta of ~5 brpm). Users wanting a Connect-aligned
+    awake number should rely on `sleep_avg_respiration_brpm`, which DOES
+    match Connect's sleep mean.
+
 CLI:
     python -m blackswan.build_daily_summary daily/ \\
         --sleep-official garmin/timeseries/history/sleep-official.csv \\
@@ -50,6 +71,8 @@ from datetime import datetime
 from pathlib import Path
 from statistics import mean
 
+from blackswan._time import LOCAL_TZ
+
 _OUT_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-")
 
 __all__ = [
@@ -58,6 +81,23 @@ __all__ = [
     "build_one",
     "build_all",
 ]
+
+
+# ── Sentinel / sanity bounds ────────────────────────────────────────────────
+
+# `respiration_rate_mesgs` emits -1 (and occasionally -2) on unmeasurable
+# minutes; values 0-3 are physiologically implausible (clinical lower bound
+# for living humans is ~4 brpm in deep meditation). Floor at 4 drops both
+# the Garmin sentinels and the low-confidence regime in one bound.
+MIN_PHYSIOLOGICAL_BRPM = 4
+
+# Optical HR can emit 0 on dropout and 255 as a high-end sentinel. The 25
+# lower bound (vs the more conservative 30) is deliberate — trained-athlete
+# resting HR sits in the low 30s; rejecting those would silently underweight
+# real readings. The 220 cap sits above the textbook age-zero max (220 -
+# age) and catches the high sentinel without rejecting plausible peaks.
+MIN_PHYSIOLOGICAL_BPM = 25
+MAX_PHYSIOLOGICAL_BPM = 220
 
 
 # ── Schema (SSOT) ───────────────────────────────────────────────────────────
@@ -86,6 +126,10 @@ DAILY_SUMMARY_COLS = [
     "deep_sec", "light_sec", "rem_sec", "awake_sec", "unmeasurable_sec",
     # Body battery — bulk-export passthrough (energy in/out, not level curve)
     "body_battery_charged", "body_battery_drained",
+    # HR sleep/awake split — appended after the v0.3.0 prefix; readers
+    # iterating by name are unaffected, position-indexed readers stay stable
+    # through the prefix (locked by tests/test_build_daily_summary.py:test_t6).
+    "sleep_avg_hr_bpm", "awake_avg_hr_bpm",
 ]
 
 
@@ -143,6 +187,34 @@ def _to_int(s: str | None) -> int | None:
     return int(v) if v is not None else None
 
 
+def _filter_physiological_respiration(rows: list[dict]) -> list[dict]:
+    """Drop respiration readings below `MIN_PHYSIOLOGICAL_BRPM`.
+
+    Applied before any respiration aggregation so the sleep/awake split
+    inherits the cleaned rows and `min/max/avg` see the same input.
+    """
+    out: list[dict] = []
+    for row in rows:
+        v = _to_float(row.get("respiration_rate_brpm"))
+        if v is not None and v >= MIN_PHYSIOLOGICAL_BRPM:
+            out.append(row)
+    return out
+
+
+def _filter_physiological_hr(rows: list[dict]) -> list[dict]:
+    """Drop HR readings outside `[MIN_PHYSIOLOGICAL_BPM, MAX_PHYSIOLOGICAL_BPM]`.
+
+    Applied before any HR aggregation so avg + sleep/awake split see the
+    same cleaned input.
+    """
+    out: list[dict] = []
+    for row in rows:
+        v = _to_float(row.get("hr_bpm"))
+        if v is not None and MIN_PHYSIOLOGICAL_BPM <= v <= MAX_PHYSIOLOGICAL_BPM:
+            out.append(row)
+    return out
+
+
 def _aggregate_floats(rows, col: str) -> dict:
     """Return avg/min/max/n for a numeric column. Empty → all None / 0."""
     vals: list[float] = []
@@ -169,43 +241,60 @@ def _parse_iso(s: str | None) -> datetime | None:
         return None
 
 
-def _split_respiration_by_window(
-    resp_rows: list[dict],
+def _split_floats_by_window(
+    rows: list[dict],
     session_start: datetime | None,
     session_end: datetime | None,
+    *,
+    val_col: str = "respiration_rate_brpm",
+    ts_col: str = "timestamp",
 ) -> tuple[float | None, float | None]:
-    """Return (sleep_avg, awake_avg). When the window is unknown both are None
-    — by design, we do NOT silently classify all readings as awake."""
+    """Return `(in_window_avg, out_window_avg)` over `val_col`.
+
+    When the window is unknown both are `None` — by design, we never
+    silently bucket all readings as out-of-window.
+    """
     if session_start is None or session_end is None:
         return None, None
-    sleep_vals: list[float] = []
-    awake_vals: list[float] = []
-    for row in resp_rows:
-        ts = _parse_iso(row.get("timestamp"))
-        v = _to_float(row.get("respiration_rate_brpm"))
+    in_vals: list[float] = []
+    out_vals: list[float] = []
+    for row in rows:
+        ts = _parse_iso(row.get(ts_col))
+        v = _to_float(row.get(val_col))
         if ts is None or v is None:
             continue
+        # parse_daily_fit emits tz-aware ISO via _local(); legacy or
+        # hand-authored CSVs may be naive. Treat naive ts as LOCAL_TZ
+        # rather than crash on `<=` against the tz-aware window.
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=LOCAL_TZ)
         if session_start <= ts <= session_end:
-            sleep_vals.append(v)
+            in_vals.append(v)
         else:
-            awake_vals.append(v)
+            out_vals.append(v)
     return (
-        mean(sleep_vals) if sleep_vals else None,
-        mean(awake_vals) if awake_vals else None,
+        mean(in_vals) if in_vals else None,
+        mean(out_vals) if out_vals else None,
     )
 
 
 def _resting_hr(rows: list[dict]) -> float | None:
     """Latest non-null `current_day_resting_hr_bpm` (resting trend stabilizes
     over the day; the most recent reading is the day's authoritative value).
-    Falls back to `resting_hr_bpm` when current_day is empty."""
+    Falls back to `resting_hr_bpm` when current_day is empty.
+
+    The bounds `[MIN_PHYSIOLOGICAL_BPM, MAX_PHYSIOLOGICAL_BPM]` apply to
+    BOTH `current_day_resting_hr_bpm` and the `resting_hr_bpm` fallback —
+    a sentinel `0` in either column is skipped, not propagated. Without
+    this guard, an end-of-day dropout would silently become the day's
+    resting HR. Returns `None` when no row in either column passes."""
     if not rows:
         return None
     sorted_rows = sorted(rows, key=lambda r: (r.get("timestamp") or ""))
     for col in ("current_day_resting_hr_bpm", "resting_hr_bpm"):
         for row in reversed(sorted_rows):
             v = _to_float(row.get(col))
-            if v is not None:
+            if v is not None and MIN_PHYSIOLOGICAL_BPM <= v <= MAX_PHYSIOLOGICAL_BPM:
                 return v
     return None
 
@@ -300,12 +389,31 @@ def build_one(
                   file=sys.stderr)
             completeness = "partial"
 
-    hr_rows = inputs["hr.csv"]
+    hr_rows = _filter_physiological_hr(inputs["hr.csv"])
     spo2_rows = inputs["spo2.csv"]
-    resp_rows = inputs["respiration.csv"]
+    resp_rows = _filter_physiological_respiration(inputs["respiration.csv"])
     sa_rows = inputs["sleep-assessment.csv"]
     hrv_rows = inputs["hrv-summary.csv"]
     rhr_rows = inputs["intraday-rhr.csv"]
+
+    # _REQUIRED_INPUTS catches missing/empty files; this catches the case
+    # where the file had rows but the sentinel filter dropped all of them.
+    # Without this, a fully-sentinel CSV would emit completeness="full" with
+    # avg=None — exactly the silent-fail mode CLAUDE.md prohibits.
+    if inputs["hr.csv"] and not hr_rows:
+        print(
+            f"  warning: {date} hr: all rows outside "
+            "[MIN_PHYSIOLOGICAL_BPM, MAX_PHYSIOLOGICAL_BPM]; partial mode",
+            file=sys.stderr,
+        )
+        completeness = "partial"
+    if inputs["respiration.csv"] and not resp_rows:
+        print(
+            f"  warning: {date} respiration: all rows below "
+            "MIN_PHYSIOLOGICAL_BRPM; partial mode",
+            file=sys.stderr,
+        )
+        completeness = "partial"
 
     hr_stats = _aggregate_floats(hr_rows, "hr_bpm")
     spo2_stats = _aggregate_floats(spo2_rows, "spo2_percent")
@@ -331,8 +439,13 @@ def build_one(
             session_start = _parse_iso(ss)
             session_end = _parse_iso(se)
 
-    sleep_avg, awake_avg = _split_respiration_by_window(
-        resp_rows, session_start, session_end
+    sleep_avg_resp, awake_avg_resp = _split_floats_by_window(
+        resp_rows, session_start, session_end,
+        val_col="respiration_rate_brpm",
+    )
+    sleep_avg_hr, awake_avg_hr = _split_floats_by_window(
+        hr_rows, session_start, session_end,
+        val_col="hr_bpm",
     )
 
     hrv = _latest_hrv_summary(hrv_rows)
@@ -388,8 +501,8 @@ def build_one(
         "min_respiration_brpm": resp_stats["min"],
         "max_respiration_brpm": resp_stats["max"],
         "n_respiration_readings": resp_stats["n"],
-        "sleep_avg_respiration_brpm": sleep_avg,
-        "awake_avg_respiration_brpm": awake_avg,
+        "sleep_avg_respiration_brpm": sleep_avg_resp,
+        "awake_avg_respiration_brpm": awake_avg_resp,
         "sleep_start_gmt": sleep_start,
         "sleep_end_gmt": sleep_end,
         "total_sleep_sec": total_sleep,
@@ -404,6 +517,8 @@ def build_one(
         "body_battery_drained": (
             _to_int(bb_row.get("body_battery_drained")) if bb_row else None
         ),
+        "sleep_avg_hr_bpm": sleep_avg_hr,
+        "awake_avg_hr_bpm": awake_avg_hr,
     }
 
     if hrv is not None:
