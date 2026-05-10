@@ -64,21 +64,17 @@ __all__ = [
 
 # ── Sentinel / sanity bounds ────────────────────────────────────────────────
 
-# Garmin's `respiration_rate_mesgs` writes -1 (and occasionally -2) when the
-# device cannot measure breathing; raw values 0-3 are also physiologically
-# implausible (clinical lower bound for living humans is ~4 brpm in deep
-# meditation). Floor at 4 to drop both Garmin sentinels and low-confidence
-# readings. Applied to all respiration aggregates (min/max/avg + sleep/awake
-# split). See issue #10.
+# `respiration_rate_mesgs` emits -1 (and occasionally -2) on unmeasurable
+# minutes; values 0-3 are physiologically implausible (clinical lower bound
+# for living humans is ~4 brpm in deep meditation). Floor at 4 drops both
+# the Garmin sentinels and the low-confidence regime in one bound.
 MIN_PHYSIOLOGICAL_BRPM = 4
 
-# vivoactive 5's optical HR sensor emits 0 on dropout and historically 255 as
-# a high-end sentinel. Bounds [25, 220] catch those plus sub-25 and >220
-# outliers that are physiologically implausible for waking adults; the lower
-# floor of 25 (vs the more conservative 30) preserves trained-athlete RHR
-# (cyclist resting HR routinely sits in the low 30s). Applied to HR
-# aggregate (avg) + sleep/awake split + the resting-HR scan in `_resting_hr`.
-# See issue #10 + audit decision 15.
+# Optical HR can emit 0 on dropout and 255 as a high-end sentinel. The 25
+# lower bound (vs the more conservative 30) is deliberate — trained-athlete
+# resting HR sits in the low 30s; rejecting those would silently underweight
+# real readings. The 220 cap sits above the textbook age-zero max (220 -
+# age) and catches the high sentinel without rejecting plausible peaks.
 MIN_PHYSIOLOGICAL_BPM = 25
 MAX_PHYSIOLOGICAL_BPM = 220
 
@@ -109,7 +105,9 @@ DAILY_SUMMARY_COLS = [
     "deep_sec", "light_sec", "rem_sec", "awake_sec", "unmeasurable_sec",
     # Body battery — bulk-export passthrough (energy in/out, not level curve)
     "body_battery_charged", "body_battery_drained",
-    # v0.3.1: HR sleep/awake split — append-only per schema-lock convention.
+    # HR sleep/awake split — appended after the v0.3.0 prefix; readers
+    # iterating by name are unaffected, position-indexed readers stay stable
+    # through the prefix (locked by tests/test_build_daily_summary.py:test_t6).
     "sleep_avg_hr_bpm", "awake_avg_hr_bpm",
 ]
 
@@ -171,9 +169,8 @@ def _to_int(s: str | None) -> int | None:
 def _filter_physiological_respiration(rows: list[dict]) -> list[dict]:
     """Drop respiration readings below `MIN_PHYSIOLOGICAL_BRPM`.
 
-    Garmin emits -1/-2 sentinels when measurement fails; values 0-3 are
-    sub-physiological. Applied before all respiration aggregations
-    (min/max/avg + sleep/awake split). See issue #10.
+    Applied before any respiration aggregation so the sleep/awake split
+    inherits the cleaned rows and `min/max/avg` see the same input.
     """
     out: list[dict] = []
     for row in rows:
@@ -186,9 +183,8 @@ def _filter_physiological_respiration(rows: list[dict]) -> list[dict]:
 def _filter_physiological_hr(rows: list[dict]) -> list[dict]:
     """Drop HR readings outside `[MIN_PHYSIOLOGICAL_BPM, MAX_PHYSIOLOGICAL_BPM]`.
 
-    Catches vivoactive 5's optical-HR-dropout `0` + historical `255` high
-    sentinel + sub-25 / >220 implausible values. Applied before all HR
-    aggregations (avg + sleep/awake split). See issue #10.
+    Applied before any HR aggregation so avg + sleep/awake split see the
+    same cleaned input.
     """
     out: list[dict] = []
     for row in rows:
@@ -261,20 +257,14 @@ def _split_floats_by_window(
     )
 
 
-# Compat alias for v0.3.0 callers — to be removed in v0.4.0. Same positional
-# signature; default `val_col="respiration_rate_brpm"` preserves behavior.
-_split_respiration_by_window = _split_floats_by_window
-
-
 def _resting_hr(rows: list[dict]) -> float | None:
     """Latest non-null `current_day_resting_hr_bpm` (resting trend stabilizes
     over the day; the most recent reading is the day's authoritative value).
     Falls back to `resting_hr_bpm` when current_day is empty.
 
     Skips rows whose value falls outside `[MIN_PHYSIOLOGICAL_BPM,
-    MAX_PHYSIOLOGICAL_BPM]`. vivoactive 5 can write `current_day=0` on a
-    dropout-tail end-of-day reading; without this guard the day's resting
-    HR would silently fall to 0. See issue #10 + audit Codex H4."""
+    MAX_PHYSIOLOGICAL_BPM]`. Without that guard, an end-of-day dropout
+    (`current_day=0`) would silently become the day's resting HR."""
     if not rows:
         return None
     sorted_rows = sorted(rows, key=lambda r: (r.get("timestamp") or ""))

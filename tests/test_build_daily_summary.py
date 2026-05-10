@@ -370,12 +370,11 @@ def test_t17_multi_row_hrv_takes_latest_with_warning(tmp_path, capsys):
     assert row["status"] == "LATER"
 
 
-# ── T18 ── respiration sentinel filter (issue #10)
+# ── T18 ── respiration sentinel filter
 
 def test_t18_respiration_sentinel_filter(tmp_path):
     """-1/-2 Garmin sentinels and sub-physiological values (0-3 brpm) drop
-    out of min/max/avg AND out of the sleep/awake split (Codex H7).
-    See issue #10."""
+    out of min/max/avg AND out of the sleep/awake split."""
     base = SYNTH_SLEEP_TS_START
     awake_base = SYNTH_SLEEP_TS_END + timedelta(hours=2)
     resp_rows = [
@@ -405,7 +404,7 @@ def test_t18_respiration_sentinel_filter(tmp_path):
     assert abs(float(row["awake_avg_respiration_brpm"]) - 16.0) < 1e-6
 
 
-# ── T19 ── HR sleep/awake split (issue #10 part 2)
+# ── T19 ── HR sleep/awake split
 
 def test_t19_hr_sleep_awake_split(tmp_path):
     """sleep_avg_hr_bpm and awake_avg_hr_bpm reuse the same window helper as
@@ -452,7 +451,7 @@ def test_t20_hr_split_empty_session_window(tmp_path):
     assert row["data_completeness"] == "partial"
 
 
-# ── T24 ── tz-naive timestamps normalized to LOCAL_TZ (audit F3 / Codex H5)
+# ── T24 ── tz-naive timestamps normalized to LOCAL_TZ
 
 def test_t24_tz_naive_timestamps_normalized_to_local(tmp_path):
     """Defensive contract: legacy or hand-authored CSVs may emit naive
@@ -468,7 +467,7 @@ def test_t24_tz_naive_timestamps_normalized_to_local(tmp_path):
     assert float(row["awake_avg_hr_bpm"]) == 80.0
 
 
-# ── T21 ── HR sentinel filter (issue #10 P7)
+# ── T21 ── HR sentinel filter
 
 def test_t21_hr_sentinel_filter(tmp_path):
     """HR=0 (vivoactive 5 dropout) and HR=255 (high sentinel) drop from avg
@@ -501,7 +500,7 @@ def test_t21_hr_sentinel_filter(tmp_path):
     assert float(row["awake_avg_hr_bpm"]) == 80.0
 
 
-# ── T23 ── all-sentinel HR → partial (audit F1)
+# ── T23 ── all-sentinel HR → partial
 
 def test_t23_all_sentinel_hr_partial(tmp_path):
     """Every HR row is a sentinel → all aggregates empty, n_hr_readings == 0,
@@ -522,7 +521,7 @@ def test_t23_all_sentinel_hr_partial(tmp_path):
     assert row["data_completeness"] == "partial"
 
 
-# ── T25 ── _resting_hr skips sentinel rows (audit Codex H4)
+# ── T25 ── _resting_hr skips sentinel rows
 
 def test_t25_resting_hr_skips_sentinel_rows(tmp_path):
     """The latest intraday-rhr row may carry HR=0 on a dropout-tail
@@ -540,7 +539,7 @@ def test_t25_resting_hr_skips_sentinel_rows(tmp_path):
     assert float(row["resting_hr_bpm"]) == 58.0
 
 
-# ── T22 ── all-sentinel respiration → partial (audit F1)
+# ── T22 ── all-sentinel respiration → partial
 
 def test_t22_all_sentinel_respiration_partial(tmp_path):
     """Every respiration row is sentinel → all aggregate cells empty,
