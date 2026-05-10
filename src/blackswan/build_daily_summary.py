@@ -262,9 +262,11 @@ def _resting_hr(rows: list[dict]) -> float | None:
     over the day; the most recent reading is the day's authoritative value).
     Falls back to `resting_hr_bpm` when current_day is empty.
 
-    Skips rows whose value falls outside `[MIN_PHYSIOLOGICAL_BPM,
-    MAX_PHYSIOLOGICAL_BPM]`. Without that guard, an end-of-day dropout
-    (`current_day=0`) would silently become the day's resting HR."""
+    The bounds `[MIN_PHYSIOLOGICAL_BPM, MAX_PHYSIOLOGICAL_BPM]` apply to
+    BOTH `current_day_resting_hr_bpm` and the `resting_hr_bpm` fallback —
+    a sentinel `0` in either column is skipped, not propagated. Without
+    this guard, an end-of-day dropout would silently become the day's
+    resting HR. Returns `None` when no row in either column passes."""
     if not rows:
         return None
     sorted_rows = sorted(rows, key=lambda r: (r.get("timestamp") or ""))

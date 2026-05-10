@@ -539,6 +539,24 @@ def test_t25_resting_hr_skips_sentinel_rows(tmp_path):
     assert float(row["resting_hr_bpm"]) == 58.0
 
 
+# ── T26 ── _resting_hr returns None when every intraday-rhr row is sentinel
+
+def test_t26_resting_hr_all_sentinels_returns_none(tmp_path):
+    """When BOTH `current_day_resting_hr_bpm` and `resting_hr_bpm` are
+    sentinels across all rows, `_resting_hr` returns None and the output
+    cell is blank — never the sentinel."""
+    base = SYNTH_SLEEP_TS_START
+    intraday_rhr_rows = [
+        # Every row: both columns are sentinel (0 / 1 / 255 etc.)
+        (base - timedelta(hours=4),   0,   0),
+        (base - timedelta(hours=2),   1, 255),
+        (base,                      255,   0),
+    ]
+    out_path = _build_full(tmp_path, intraday_rhr_rows=intraday_rhr_rows)
+    row = _read_one(out_path)
+    assert row["resting_hr_bpm"] == ""
+
+
 # ── T22 ── all-sentinel respiration → partial
 
 def test_t22_all_sentinel_respiration_partial(tmp_path):
