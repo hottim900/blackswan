@@ -1,6 +1,6 @@
 # blackswan
 
-A pipeline for **Cardiac Cost (CC) analysis** of Garmin FIT data — built around uphill interval training, with rigorous cross-day comparison that survives confounder scrutiny.
+A pipeline for **Cardiac Cost (CC) analysis** of Garmin FIT data — built around uphill interval training, with rigorous cross-day comparison that survives confounder scrutiny. Same metric family as **aerobic decoupling**, **Pw:Hr**, **cardiac drift**, **VAM**, **heart-rate decoupling**, and **running-power**-based efficiency tracking — blackswan focuses on the HR-only path (no power meter required).
 
 > **CC = avg HR ÷ km/h** (lower is more efficient). It's the canonical metric for tracking how your heart responds to a fixed external workload over time.
 
@@ -48,12 +48,7 @@ src/blackswan/
 ## Quickstart
 
 ```bash
-# Install
-pip install garmin-fit-sdk
-# or with uv
-uv pip install garmin-fit-sdk
-
-# Clone + dev install
+# Clone + dev install (pulls garmin-fit-sdk transitively via pyproject)
 git clone https://github.com/hottim900/blackswan
 cd blackswan
 uv pip install -e .   # or: pip install -e .

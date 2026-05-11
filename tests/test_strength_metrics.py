@@ -341,3 +341,138 @@ def test_zero_reps_notes_per_side_wording():
     assert len(baseline_notes) == 1
     assert "1 zero-reps" in baseline_notes[0]
     assert len(recent_notes) == 0  # recent had no drops → no line
+
+
+# v0.4.0 — Issue #1 P3 warning-only branch: 3-component warning contract.
+# Test plan: ~/.gstack/projects/hottim900-blackswan/tim-main-eng-review-test-plan-...
+def test_local_hour_warning_includes_n5_calibration_reference():
+    """Component B of the 3-component contract: the warning surfaces the
+    n=5 calibration numerals (early/late/overall) sourced from module
+    constants — NOT literal '+27'/'+11'/'+19'. If the corpus recalibrates,
+    bumping the constants auto-updates the warning AND this test."""
+    from blackswan.strength_metrics import (
+        N5_CALIBRATION_DELTA_EARLY_BPM,
+        N5_CALIBRATION_DELTA_LATE_BPM,
+        N5_CALIBRATION_DELTA_OVERALL_BPM,
+        N5_CALIBRATION_N,
+    )
+
+    morning = datetime(2000, 1, 15, 8, 0, tzinfo=LOCAL_TZ)
+    evening = datetime(2000, 1, 15, 20, 0, tzinfo=LOCAL_TZ)
+    a = build_session(weights=[60, 60], reps=[8, 8], start_time=morning)
+    b = build_session(weights=[60, 60], reps=[8, 8], start_time=evening)
+    report = compare_strength_sessions_from_stats(stats(a), stats(b))
+    assert report.local_hour_warning is not None
+    msg = report.local_hour_warning
+    assert f"+{N5_CALIBRATION_DELTA_EARLY_BPM}" in msg
+    assert f"+{N5_CALIBRATION_DELTA_LATE_BPM}" in msg
+    assert f"+{N5_CALIBRATION_DELTA_OVERALL_BPM}" in msg
+    assert f"n={N5_CALIBRATION_N}" in msg
+
+
+def test_local_hour_warning_includes_artifact_or_circadian_qualifier():
+    """Component C of the contract: artifact-OR-circadian attribution
+    qualifier. Refuses to attribute the +27/+11/+19 magnitudes to
+    circadian alone — they are equally consistent with the documented
+    EARLY_DEFICIT_LATE_NORMAL artifact shape per confounders.md § 9."""
+    morning = datetime(2000, 1, 15, 8, 0, tzinfo=LOCAL_TZ)
+    evening = datetime(2000, 1, 15, 20, 0, tzinfo=LOCAL_TZ)
+    a = build_session(weights=[60, 60], reps=[8, 8], start_time=morning)
+    b = build_session(weights=[60, 60], reps=[8, 8], start_time=evening)
+    report = compare_strength_sessions_from_stats(stats(a), stats(b))
+    msg = report.local_hour_warning
+    assert msg is not None
+    assert "artifact" in msg.lower()
+    assert "circadian" in msg.lower()
+    assert "EARLY_DEFICIT_LATE_NORMAL" in msg
+    assert "§ 9" in msg
+
+
+def test_local_hour_warning_preserves_hour_diff_line():
+    """Component A of the contract: the hour-diff line is preserved
+    verbatim from the pre-v0.4.0 warning so existing regression assertions
+    (lines 202-231 of this file) keep passing."""
+    morning = datetime(2000, 1, 15, 8, 0, tzinfo=LOCAL_TZ)
+    evening = datetime(2000, 1, 15, 20, 0, tzinfo=LOCAL_TZ)
+    a = build_session(weights=[60, 60], reps=[8, 8], start_time=morning)
+    b = build_session(weights=[60, 60], reps=[8, 8], start_time=evening)
+    report = compare_strength_sessions_from_stats(stats(a), stats(b))
+    msg = report.local_hour_warning
+    assert msg is not None
+    assert "8:00" in msg
+    assert "20:00" in msg
+    assert "circular diff" in msg
+    assert "12h" in msg
+
+
+def test_format_local_hour_warning_helper_callable_directly():
+    """The composition lives in `_format_local_hour_warning` so its 3
+    components are unit-testable without constructing a full
+    StrengthComparisonReport (or any stats objects). The helper derives
+    the circular diff internally from the two hours."""
+    from blackswan.strength_metrics import (
+        N5_CALIBRATION_DELTA_EARLY_BPM,
+        _format_local_hour_warning,
+    )
+
+    msg = _format_local_hour_warning(baseline_hour=8, recent_hour=20)
+    assert "8:00" in msg and "20:00" in msg and "12h" in msg
+    assert f"+{N5_CALIBRATION_DELTA_EARLY_BPM}" in msg
+    assert "artifact" in msg.lower() and "circadian" in msg.lower()
+
+    # Wrap-around: hour 23 and hour 2 should produce circular diff = 3.
+    msg2 = _format_local_hour_warning(baseline_hour=23, recent_hour=2)
+    assert "circular diff 3h" in msg2
+
+
+def test_n5_calibration_constants_match_confounders_doc():
+    """SSOT contract between `strength_metrics.py` constants and
+    `docs/confounders.md § 9` calibration table. If this fails, EITHER
+    the constants OR the doc table is stale — update both in the same
+    commit. The literal numerals here mirror the doc; that is the SSOT
+    pin point. Production code reads the constants, not literals."""
+    from blackswan.strength_metrics import (
+        N5_CALIBRATION_DELTA_EARLY_BPM,
+        N5_CALIBRATION_DELTA_LATE_BPM,
+        N5_CALIBRATION_DELTA_OVERALL_BPM,
+        N5_CALIBRATION_N,
+    )
+
+    assert N5_CALIBRATION_DELTA_EARLY_BPM == 27
+    assert N5_CALIBRATION_DELTA_LATE_BPM == 11
+    assert N5_CALIBRATION_DELTA_OVERALL_BPM == 19
+    assert N5_CALIBRATION_N == 5
+
+    doc_path = Path(__file__).resolve().parent.parent / "docs" / "confounders.md"
+    doc = doc_path.read_text(encoding="utf-8")
+    assert f"+{N5_CALIBRATION_DELTA_EARLY_BPM} bpm" in doc, (
+        "confounders.md § 9 must contain the early-bpm numeral; recalibrate both "
+        "the doc table AND strength_metrics.N5_CALIBRATION_DELTA_EARLY_BPM together."
+    )
+    assert f"+{N5_CALIBRATION_DELTA_LATE_BPM} bpm" in doc
+    assert f"+{N5_CALIBRATION_DELTA_OVERALL_BPM} bpm" in doc
+
+
+def test_local_hour_correction_bpm_field_exists_and_defaults_to_none():
+    """v0.4.0 ships the warning-only branch. `local_hour_correction_bpm`
+    is an always-ship field (sentinel semantics: None / 0.0 / non-zero)
+    so consumers do not have to branch on which v0.X.Y shipped. On
+    warning-only, it is always None — even when the hour-diff warning
+    fires."""
+    morning = datetime(2000, 1, 15, 8, 0, tzinfo=LOCAL_TZ)
+    evening = datetime(2000, 1, 15, 20, 0, tzinfo=LOCAL_TZ)
+    a = build_session(weights=[60, 60], reps=[8, 8], start_time=morning)
+    b = build_session(weights=[60, 60], reps=[8, 8], start_time=evening)
+    report = compare_strength_sessions_from_stats(stats(a), stats(b))
+    assert hasattr(report, "local_hour_correction_bpm")
+    assert report.local_hour_correction_bpm is None
+    assert report.local_hour_warning is not None  # warning still fires
+
+    # And when no warning fires (within threshold) the field is also None.
+    morn_a = datetime(2000, 1, 15, 9, 0, tzinfo=LOCAL_TZ)
+    morn_b = datetime(2000, 1, 15, 11, 0, tzinfo=LOCAL_TZ)
+    a2 = build_session(weights=[60, 60], reps=[8, 8], start_time=morn_a)
+    b2 = build_session(weights=[60, 60], reps=[8, 8], start_time=morn_b)
+    r2 = compare_strength_sessions_from_stats(stats(a2), stats(b2))
+    assert r2.local_hour_correction_bpm is None
+    assert r2.local_hour_warning is None

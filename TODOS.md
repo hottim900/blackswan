@@ -352,3 +352,114 @@ confirms the risk class but doesn't resolve it.
 
 **When to revisit:** v0.4.0 design phase / when adding a 5th aggregate
 metric / when first non-self consumer lands.
+
+## v0.4.0 deferred items (issue-#1-P3 warning-only branch)
+
+### Strength HR circadian correction (issue #1 P3, correction branch)
+
+**Where:** `src/blackswan/strength_metrics.py` —
+`StrengthComparisonReport.local_hour_correction_bpm` field already exists
+with sentinel semantics (`None` = correction not computed; `0.0` =
+computed/no adjustment; non-zero `float` = bpm sidecar). v0.4.0 ships
+warning-only so the field is `None` for every report.
+
+**What:** populate `local_hour_correction_bpm` with a formula derived
+against an n ≥ 10 corpus where time-of-day is decoupled from chronology.
+Formula candidates (v0.4.0 design Open Q #2): linear
+(`β × |hour - 15|`), 2-band split (afternoon-vs-evening flat offset), or
+sinusoidal (`A × cos(2π × (hour - φ) / 24)`). Linear or 2-band is the
+defensible call for n ≈ 10-30 single-user data.
+
+**Unblock condition (binary AND-gate per `confounders.md § 9.1`):**
+
+1. Corpus has **n ≥ 10** strength_training FIT files.
+2. Each time-of-day band — morning (<11h) / afternoon (11–17h) / evening
+   (>17h) — has at least one session within the **same 4-week window**
+   (chronology decoupled from time-of-day per `§ 9` calibration confound).
+
+**How to inspect:** run `scripts/inventory_strength_corpus.py --root
+<archive>`. The script prints `AND_GATE_UNLOCKED=<bool>`. Output CSV is
+PII-safe (synthetic session ids, no fit_path, no exact timestamps).
+
+**Revisit trigger:** every 3 months, or whenever a new strength session
+lands in a previously empty band-week cell.
+
+**Owner:** hottim900. **Last inventory run:** 2026-05-11
+(`n_total=0` on the development machine — the documented n=5 calibration
+sample from `confounders.md § 9` lived on a different host; AND-gate
+locked by both clauses).
+
+### `_LOCAL_HOUR_WARN_THRESHOLD` re-examination (3 h hardcoded)
+
+**Where:** `src/blackswan/strength_metrics.py` —
+`_LOCAL_HOUR_WARN_THRESHOLD = 3` (circular hour diff above which
+`local_hour_warning` is emitted).
+
+**What:** the 3-hour boundary is a v1 guess. Once the inventory unlocks
+(above) and a formula lands in `confounders.md § 9.1`, the threshold
+should be re-derived from the formula's noise floor rather than left at
+3.
+
+**Why deferred:** out of v0.4.0 scope per the warning-only branch
+decision; v0.4.0 design Decision Audit Trail #8.
+
+**When to revisit:** with the correction-branch ship.
+
+### Cardio circadian residual recalibration (`confounders.md § 7`)
+
+**What:** `§ 7` currently lumps time-of-day into the cardio ±3-5 bpm
+noise floor. If the strength formula (when it ships) shows a much larger
+circadian effect than 3-5 bpm, the cardio assumption may need
+recalibration too. Out of v0.4.0 scope (strength-only) but worth
+revisiting symmetrically.
+
+**Why deferred:** v0.4.0 design Open Q #5; flagged as out-of-scope.
+
+**When to revisit:** with the correction-branch ship, OR a separately
+filed cardio-side issue showing the residual matters.
+
+### D2 framework abstraction (Rule of Three trigger)
+
+**Where:** would live as `src/blackswan/_compare.py` (new module
+extracting `compare_*_sessions` pattern from `cc_metrics` +
+`strength_metrics`).
+
+**What:** the strength circadian correction (when it ships) is the 2nd
+use case of the confounder-correction pattern. A third would trigger
+CLAUDE.md "rule of three" and justify the extraction. v0.4.0 design L1
+(Decision Audit Trail #13) makes this explicit.
+
+**Trigger:** the moment a third comparator (`sleep_metrics` cross-session,
+or NP cross-session, or any new module) is about to write the same
+exclusion-shopping guard + delta-accumulation + noise-floor reporting
+scaffolding for the third time.
+
+### Inventory script productionization
+
+**Where:** `scripts/inventory_strength_corpus.py`.
+
+**What:** if the inventory becomes a recurring need (re-run quarterly
+per the unblock revisit trigger), the script earns:
+
+- typed return value (currently prints + `sys.exit(...)` only)
+- unit test against a temp dir of synthetic FITs
+- a thin `blackswan inventory-strength` CLI subcommand when D4 ships
+
+**Why deferred:** one-shot author tool today; productionizing before the
+second use case would be over-engineering.
+
+**When to revisit:** on the second invocation, OR when D4 (CLI) ships.
+
+### PyPI `Topic :: Scientific/Engineering :: Medical Science Apps.` classifier
+
+**Where:** `pyproject.toml` `classifiers` list.
+
+**What:** add the `Medical Science Apps.` classifier per
+`docs/evolution-proposals.md § D1` (explicit `Medical / sport science`
+discoverability surface). Excluded from v0.4.0 to keep the D1-minimal
+surface tight; would be part of D1-full.
+
+**Why deferred:** D1 full is "DEFERRED — awaiting dogfooding signal"
+per `docs/evolution-proposals.md`. Same trigger.
+
+**When to revisit:** with D1 full, OR before first PyPI publish.
