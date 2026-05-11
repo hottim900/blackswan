@@ -2,11 +2,11 @@
 
 Companion document to [`related-work.md`](related-work.md), which surveyed the open-source ecosystem and identified five evolution directions. Each direction below was produced as a separate concrete proposal by a specialist agent, then synthesised here with cross-direction interactions and a recommended sequence.
 
-> **STATUS (post v0.4.0, 2026-05-11).** The priority table below is **ARCHIVED — superseded by issue-driven priority**. The audience-reframe at v0.4.0 office-hours established that blackswan's audience is the author (dogfooder); the only hard demand evidence in the backlog points to issue #1 P3, which the synthesis did not address. v0.4.0 shipped issue #1 P3 (warning-only branch) + D1 minimal (README tagline + pyproject keywords). Direction-level status tags appear inline on each direction section below. The new gate for shipping D1-full / D3 / D4 / D5 is **a dogfooding-derived GitHub issue** (per P7 in the v0.4.0 design), not the synthesis's effort-tier table.
+> **STATUS (post v0.4.0).** The priority table below is **ARCHIVED — superseded by issue-driven priority**. The audience-reframe at v0.4.0 office-hours established that blackswan's audience is the author (dogfooder); the only hard demand evidence in the backlog points to issue #1 P3, which the synthesis did not address. v0.4.0 shipped issue #1 P3 (warning-only branch) + D1 minimal (README tagline + pyproject keywords). Direction-level status tags appear inline on each direction section below. The new gate for shipping D1-full / D3 / D4 / D5 is **a dogfooding-derived GitHub issue** (per P7 in the v0.4.0 design), not the synthesis's effort-tier table.
 
 ## Synthesis: priority and sequence
 
-> ⚠ **ARCHIVED.** The table below reflects the 2026-05-11 synthesis priority. It was superseded the same day by the v0.4.0 issue-driven plan. Kept for historical context — do not use as a current roadmap.
+> ⚠ **ARCHIVED.** The table below reflects the pre-v0.4.0 synthesis priority. It was superseded by the v0.4.0 issue-driven plan on the same day it was written. Kept for historical context — do not use as a current roadmap.
 
 | Tier | Direction | Effort | When | Why |
 |---|---|---|---|---|
