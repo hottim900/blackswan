@@ -174,7 +174,7 @@ If either clause fails, ship warning-only. Don't pretend the data permits more t
 
 **Inventory protocol.** Run `scripts/inventory_strength_corpus.py --root <archive>`; it walks the archive, parses every strength FIT, and prints `AND_GATE_UNLOCKED=<bool>`. The script fails closed if any subdirectory errors during walk — a partial scan is worse than no scan. Output CSV is PII-safe (synthetic `session_id` only, no fit_path, no exact `start_time`).
 
-**v0.4.0 inventory snapshot.** Run by the maintainer on 2026-05-11 against the development machine's archive: `n_total=0` (no strength FITs present at scan time; the documented n=5 calibration sample from § 9 lived on a different host). The AND-gate is locked by both clauses (n < 10 AND chronology still confounded per the § 9 calibration history). Warning-only branch shipped.
+**v0.4.0 inventory snapshot.** Run by the maintainer at v0.4.0 release time against the development machine's archive: `n_total=0` (no strength FITs present at scan time; the documented n=5 calibration sample from § 9 lived on a different host). The AND-gate is locked by both clauses (n < 10 AND chronology still confounded per the § 9 calibration history). Warning-only branch shipped. CHANGELOG.md carries the release date.
 
 **Revisit trigger.** Every 3 months, or whenever a new strength session lands in a previously empty band-week cell. When the gate unlocks, this subsection extends with the formula derivation (linear / 2-band / sinusoidal — see v0.4.0 design Open Q #2), calibration narrative, and validation table; the field semantics for `local_hour_correction_bpm` need no further change.
 
