@@ -4,6 +4,100 @@ All notable changes to this project will be documented in this file. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-05-11
+
+### Added
+- **Strength comparison surfaces the cross-session local-hour confounder
+  (closes #1 P3, warning-only branch).** Before v0.4.0 the warning text
+  was a one-line "circular diff Nh; see § 9 for the n=5 calibration
+  confound caveat." v0.4.0 expands it to the 3-component contract from
+  the v0.4.0 design (warning-text contract, lines 75-80):
+  1. hour-diff line (preserved)
+  2. quantitative reference quoting `docs/confounders.md § 9`'s n=5
+     calibration (afternoon vs evening +27 bpm early sets / +11 bpm late
+     sets / +19 bpm overall) — framed as artifact-favoured so a reader
+     who never follows the link cannot misread the magnitudes as a
+     validated circadian effect size
+  3. artifact-OR-circadian attribution qualifier
+     ("EARLY_DEFICIT_LATE_NORMAL signature OR circadian — both hypotheses
+     consistent with the n=5 sample")
+
+  The +27/+11/+19 numerals live in module constants
+  (`N5_CALIBRATION_DELTA_EARLY_BPM`, `_LATE_BPM`, `_OVERALL_BPM`,
+  `N5_CALIBRATION_N`) so the doc table + warning text + tests share one
+  source of truth. Composed via `_format_local_hour_warning(...)`.
+- **`StrengthComparisonReport.local_hour_correction_bpm` field
+  (always-ship sidecar).** Reserved field with explicit sentinel
+  semantics so consumers do not have to check which branch shipped:
+    * `None` → correction not computed (the v0.4.0 default; also returned
+      by the future correction branch when formula evaluation skips a
+      pair, e.g. same `local_hour`)
+    * `0.0` → correction computed, no adjustment needed
+    * non-zero `float` → correction magnitude in bpm. Existing
+      `exact_slot_mean_delta` and `pairs[].hr_delta` STAY RAW; consumers
+      apply the sidecar as
+      `corrected_recent_hr = recent.hr_avg - local_hour_correction_bpm`.
+
+  The field is `kw_only=True` and defaults to `None`, so existing
+  positional `StrengthComparisonReport(...)` constructions remain valid
+  and `asdict()`/pickle compatibility is preserved across the field
+  addition.
+- **`scripts/inventory_strength_corpus.py`** — one-shot author tool that
+  walks a Garmin archive, parses every strength FIT, and prints
+  `AND_GATE_UNLOCKED=<bool>` against the binary unblock condition
+  (`n ≥ 10` AND each time-of-day band covered in the most recent 4-week
+  window). Output CSV is PII-safe (synthetic `session_id`, no fit_path,
+  no exact timestamps). Fails closed (exit 2) on any unreadable
+  subdirectory — a partial scan is worse than no scan.
+- **`docs/confounders.md § 9.1`** — Unblock condition for circadian
+  correction (Issue #1 P3). Documents the binary AND-gate, the inventory
+  protocol, the v0.4.0 inventory snapshot, and the revisit trigger. § 9.1
+  extends with the formula derivation + validation table when the
+  correction branch ships.
+
+### Changed
+- **`docs/evolution-proposals.md`** — synthesis priority table tagged
+  `ARCHIVED — superseded by issue-driven priority`. D1 full / D3 / D4 /
+  D5 sections individually tagged `DEFERRED — awaiting dogfooding
+  signal`. D1 minimal (README tagline + pyproject keywords) shipped.
+- **`README.md`** — line 3 tagline appends industry vocabulary
+  (`aerobic decoupling, Pw:Hr, cardiac drift, VAM, heart-rate decoupling,
+  running power`) with an HR-only-path scope note that does not
+  overclaim power-meter equivalence. Quickstart drops the dead-line
+  `pip install garmin-fit-sdk` standalone — the SDK is a transitive
+  dependency of `uv pip install -e .`.
+- **`pyproject.toml`** — keywords expanded by 6 entries:
+  `aerobic-decoupling`, `pw-hr`, `vam`, `heart-rate-decoupling`,
+  `cardiac-drift`, `running-power`. PyPI
+  `Topic :: Scientific/Engineering :: Medical Science Apps.` classifier
+  intentionally NOT added — deferred to D1 full / first PyPI publish per
+  TODOS.
+
+### Compatibility
+- `StrengthComparisonReport` gained the `local_hour_correction_bpm`
+  field (append-only after `notes`, `kw_only=True`, defaults to `None`).
+  Positional constructors and pickle/asdict consumers continue to work
+  unchanged.
+- **Re-install (`uv pip install -e .`) required** on existing checkouts
+  to surface the new field — calling `report.local_hour_correction_bpm`
+  on a stale install raises `AttributeError`.
+- Existing 3 `test_local_hour_warning_*` regression tests remain valid;
+  the warning string is longer but still contains the hour markers they
+  assert on.
+
+### Documentation
+- **`docs/related-work.md`** committed alongside `evolution-proposals.md`
+  as the historical synthesis record (28k-word 2026-05-11 strategic
+  document). Both are retained as the archived candidate pool for future
+  evolution directions; the live roadmap is now the GitHub issues
+  backlog.
+- **`TODOS.md`** new section `v0.4.0 deferred items` tracks the
+  correction-branch unblock condition (with inventory protocol + revisit
+  trigger), `_LOCAL_HOUR_WARN_THRESHOLD` re-derivation, cardio
+  circadian residual recalibration (`confounders.md § 7`), D2 Rule-of-
+  Three trigger, inventory script productionization, and the deferred
+  PyPI `Medical Science Apps.` classifier.
+
 ## [0.3.1] - 2026-05-10
 
 ### Fixed

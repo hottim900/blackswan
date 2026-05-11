@@ -161,6 +161,23 @@ Single-session mode (no reference) uses absolute thresholds only; comparison mod
 3. If excluding: pass `excluded_indices_recent` / `excluded_indices_baseline` and re-run. Both passes' `pairs[]` are exhaustive; the flag does not pre-filter.
 4. If both sessions show the artifact in similar slots, the deltas at those slots are uninterpretable — do NOT claim "+19 bpm fitness regression" without first ruling artifact out.
 
+### 9.1 Unblock condition for circadian correction (Issue #1 P3)
+
+v0.4.0 ships the **warning-only branch** of Issue #1 P3 (strength HR cross-session circadian confounder). `StrengthComparisonReport.local_hour_correction_bpm` is reserved as an always-ship field (sentinel semantics: `None` = correction not computed, `0.0` = computed/no adjustment, non-zero `float` = bpm sidecar applied as `corrected_recent_hr = recent.hr_avg - local_hour_correction_bpm`) but is `None` in v0.4.0 because the calibration corpus does not yet permit a formula.
+
+**The gate is binary.** Both clauses must hold jointly (AND):
+
+1. **n ≥ 10** strength_training FIT files in the corpus.
+2. **Time-of-day decoupled from chronology**: each band — morning (<11h), afternoon (11–17h), evening (>17h) — has at least one session within the **same 4-week window**. This rules out the § 9 calibration confound where the 3 evening sessions all preceded the 2 afternoon ones by 3–6 weeks.
+
+If either clause fails, ship warning-only. Don't pretend the data permits more than it does.
+
+**Inventory protocol.** Run `scripts/inventory_strength_corpus.py --root <archive>`; it walks the archive, parses every strength FIT, and prints `AND_GATE_UNLOCKED=<bool>`. The script fails closed if any subdirectory errors during walk — a partial scan is worse than no scan. Output CSV is PII-safe (synthetic `session_id` only, no fit_path, no exact `start_time`).
+
+**v0.4.0 inventory snapshot.** Run by the maintainer on 2026-05-11 against the development machine's archive: `n_total=0` (no strength FITs present at scan time; the documented n=5 calibration sample from § 9 lived on a different host). The AND-gate is locked by both clauses (n < 10 AND chronology still confounded per the § 9 calibration history). Warning-only branch shipped.
+
+**Revisit trigger.** Every 3 months, or whenever a new strength session lands in a previously empty band-week cell. When the gate unlocks, this subsection extends with the formula derivation (linear / 2-band / sinusoidal — see v0.4.0 design Open Q #2), calibration narrative, and validation table; the field semantics for `local_hour_correction_bpm` need no further change.
+
 ### 10. FIT spec precision asymmetry (strength `set.start_time`)
 
 **Scope.** Strength training only (today). Catalogued as a *domain confounder*, not "just a code bug" — the trap recurs anywhere the FIT spec mixes second-precision `date_time` fields with millisecond-precision duration scales, and the fix pattern (clamp + audit counter) generalises.

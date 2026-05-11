@@ -1,12 +1,15 @@
 [project]
 name = "blackswan"
-version = "0.3.1"
+version = "0.4.0"
 description = "Cardiac Cost analysis pipeline for Garmin FIT data — uphill interval training, sleep stages, HR artifacts, cross-day comparison."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "hottim900" }]
-keywords = ["garmin", "fit", "cardiac-cost", "interval-training", "training-analysis", "uphill"]
+keywords = [
+    "garmin", "fit", "cardiac-cost", "interval-training", "training-analysis", "uphill",
+    "aerobic-decoupling", "pw-hr", "vam", "heart-rate-decoupling", "cardiac-drift", "running-power",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: End Users/Desktop",

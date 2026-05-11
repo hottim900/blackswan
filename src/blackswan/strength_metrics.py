@@ -61,6 +61,54 @@ _LOCAL_HOUR_WARN_THRESHOLD = 3
 """Circular hour-diff above which local_hour_warning is emitted. See
 docs/confounders.md § 9 — calibration confound caveat."""
 
+# Mirror of docs/confounders.md § 9 n=5 calibration table (lines 135-137).
+# SSOT for warning text + tests. Update both this block AND the doc when
+# recalibrating; both are checked by
+# test_n5_calibration_constants_match_confounders_doc.
+N5_CALIBRATION_DELTA_EARLY_BPM = 27
+N5_CALIBRATION_DELTA_LATE_BPM = 11
+N5_CALIBRATION_DELTA_OVERALL_BPM = 19
+N5_CALIBRATION_N = 5
+
+
+def _circular_hour_diff(a: int, b: int) -> int:
+    # `% 24` clamps callers that pass raw datetime arithmetic without
+    # taking `.hour` first; production callers always pass `[0, 23]`.
+    diff = abs((a % 24) - (b % 24))
+    return min(diff, 24 - diff)
+
+
+def _format_local_hour_warning(baseline_hour: int, recent_hour: int) -> str:
+    """3-component contract per v0.4.0 design (issue #1 P3, warning-only branch):
+
+    1. hour-diff line (existing wording, preserved)
+    2. quantitative reference quoting confounders.md § 9 n=5 calibration
+       (+27 early / +11 late / +19 overall bpm), framed as artifact-favoured
+       so a reader who never follows the link cannot misread the numbers as
+       a validated circadian effect size
+    3. artifact-OR-circadian attribution qualifier — refuses to attribute
+       the magnitude to circadian alone
+
+    Numerals live in module constants (N5_CALIBRATION_*) so tests assert
+    ``f"+{N5_CALIBRATION_DELTA_EARLY_BPM}"`` rather than the literal
+    ``"+27"``; recalibrating the doc table propagates to warning text and
+    tests in one place.
+    """
+    hour_diff = _circular_hour_diff(baseline_hour, recent_hour)
+    return (
+        f"baseline {baseline_hour}:00 vs recent {recent_hour}:00 "
+        f"(circular diff {hour_diff}h). "
+        f"Plausible-magnitude reference (n={N5_CALIBRATION_N}, vivoactive 5, "
+        f"single user): afternoon vs evening "
+        f"+{N5_CALIBRATION_DELTA_EARLY_BPM} bpm early sets, "
+        f"+{N5_CALIBRATION_DELTA_LATE_BPM} bpm late sets, "
+        f"+{N5_CALIBRATION_DELTA_OVERALL_BPM} bpm overall — "
+        f"shape favours sensor artifact over circadian (see § 9). "
+        "Could be artifact (EARLY_DEFICIT_LATE_NORMAL signature) OR circadian — "
+        "both hypotheses are consistent with the n=5 sample; "
+        "see § 9 for the calibration confound and § 9.1 for the unblock condition."
+    )
+
 
 @dataclass
 class StrengthSetStats:
@@ -157,6 +205,22 @@ class StrengthComparisonReport:
       baseline bucket was drained first).
     * ``notes`` — running list of caveats (exclusions, ambiguous grouping,
       bucket-exhausted counts).
+    * ``local_hour_correction_bpm`` — bpm sidecar correction for the recent
+      session's mean HR (always-ship field; see ``confounders.md § 9.1`` when
+      populated). Sentinel semantics:
+
+        * ``None`` — correction not computed at all. v0.4.0 ships warning-only
+          so every report returns ``None``; future correction-branch releases
+          may also return ``None`` if formula evaluation raised before
+          producing a value.
+        * ``0.0`` — correction computed, no adjustment needed. Same-
+          ``local_hour`` sessions on the correction branch produce ``0.0``,
+          not ``None`` — the distinction lets a consumer tell "formula ran"
+          from "formula not run".
+        * non-zero ``float`` — correction magnitude in bpm. Consumers apply
+          as ``corrected_recent_hr = recent.hr_avg - local_hour_correction_bpm``.
+          Existing ``exact_slot_mean_delta`` and ``pairs[].hr_delta`` STAY
+          RAW — the correction is sidecar only.
     """
 
     baseline: StrengthSessionStats
@@ -181,6 +245,11 @@ class StrengthComparisonReport:
     n_sessions_calibrated: int
 
     notes: list[str] = field(default_factory=list)
+    # Appended after `notes` with kw_only=True to avoid positional-shift on
+    # any caller that constructs StrengthComparisonReport directly. Default
+    # `None` because v0.4.0 ships the warning-only branch (no formula); the
+    # field exists on both branches so consumers do not have to check.
+    local_hour_correction_bpm: float | None = field(default=None, kw_only=True)
 
     def summary(self) -> str:
         lines = [
@@ -218,6 +287,21 @@ class StrengthComparisonReport:
         if self.local_hour_warning:
             lines.append("")
             lines.append(f"  Time-of-day: {self.local_hour_warning}")
+        if self.local_hour_correction_bpm is not None:
+            if abs(self.local_hour_correction_bpm) < 0.05:
+                # 0.0 sentinel = formula evaluated, no adjustment needed
+                # (distinct from None = formula not evaluated).
+                lines.append(
+                    "  Time-of-day correction: 0.0 bpm "
+                    "(computed, no adjustment needed; see confounders.md § 9.1)"
+                )
+            else:
+                sign = "+" if self.local_hour_correction_bpm > 0 else ""
+                lines.append(
+                    f"  Time-of-day correction: {sign}{self.local_hour_correction_bpm:.1f} bpm "
+                    "(see confounders.md § 9.1; applied as: "
+                    "corrected_recent_hr = recent.hr_avg − correction)"
+                )
         if self.notes:
             lines.append("")
             lines.append("  Notes:")
@@ -292,11 +376,6 @@ def _count_ambiguous_groupings(stats_list: list[StrengthSetStats]) -> int:
         if len(indices) > 1 and (max(indices) - min(indices)) > len(indices) - 1:
             count += 1
     return count
-
-
-def _circular_hour_diff(a: int, b: int) -> int:
-    diff = abs(a - b)
-    return min(diff, 24 - diff)
 
 
 def compare_strength_sessions_from_stats(
@@ -487,11 +566,8 @@ def compare_strength_sessions_from_stats(
     )
     local_hour_warning: str | None = None
     if hour_diff > _LOCAL_HOUR_WARN_THRESHOLD:
-        local_hour_warning = (
-            f"baseline {baseline_stats.local_hour}:00 vs recent "
-            f"{recent_stats.local_hour}:00 (circular diff {hour_diff}h). "
-            "Time-of-day variation may add residual; see docs/confounders.md "
-            "§ 9 for the n=5 calibration confound caveat."
+        local_hour_warning = _format_local_hour_warning(
+            baseline_stats.local_hour, recent_stats.local_hour,
         )
 
     notes: list[str] = []
